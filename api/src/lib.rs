@@ -29,8 +29,8 @@ mod state;
 use horizon_client::mod_api::{
     ClientDisconnectingEvent, EntityJoinLevelEvent, EntityLeaveLevelEvent, EntityMountEvent, Flow,
     Hooks, Host, HudEvent, LevelTickPreEvent, MobSubmitEvent, MovementInputEvent,
-    NetFromServerEvent, PerformCommandEvent, PlayerInputEvent, RegisterCommandsEvent,
-    RenderNameTagEvent, TickEvent,
+    NetFromServerEvent, PerformCommandEvent, PlayerInputEvent, PlayerSubmitEvent,
+    RegisterCommandsEvent, RenderNameTagEvent, TickEvent,
 };
 
 pub fn hooks() -> Box<dyn Hooks> {
@@ -120,6 +120,19 @@ impl Hooks for Car {
         if state::snapshot(event.entity_id).is_some() {
             event.visible = false;
         }
+    }
+
+    /// The driver sits inside the car; in third person their own model would
+    /// poke through the roof, so leave it out for this window.
+    fn player_submit(&self, host: &dyn Host, event: &mut PlayerSubmitEvent<'_>) -> Flow {
+        if event.who.local
+            && host
+                .player()
+                .is_some_and(|p| state::seated_in([p.x, p.y, p.z]).is_some())
+        {
+            return Flow::Cancel;
+        }
+        Flow::Continue
     }
 
     /// The driver's speedometer.

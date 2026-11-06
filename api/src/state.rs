@@ -6,6 +6,7 @@
 //! the same snapshots over `horizon_car:state` (see [`crate::net`]).
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use horizon_client::mod_api::Host;
 
@@ -121,6 +122,9 @@ static RIDERS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 static LOCAL_DRIVE: Mutex<Option<(u32, Controls)>> = Mutex::new(None);
 /// The last input packet of each LAN guest, by UUID.
 static GUEST_INPUT: Mutex<Vec<(u128, i32)>> = Mutex::new(Vec::new());
+/// The window is in the third-person view this frame: the camera hook must
+/// leave vanilla's detached camera alone and the car must stay visible.
+static THIRD_PERSON: AtomicBool = AtomicBool::new(false);
 
 fn lock<T>(cell: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     cell.lock().unwrap_or_else(|e| e.into_inner())
@@ -176,6 +180,14 @@ pub fn rider(car: u32) -> Option<u32> {
         .iter()
         .find(|(id, _)| *id == car)
         .map(|(_, rider)| *rider)
+}
+
+pub fn set_third_person(on: bool) {
+    THIRD_PERSON.store(on, Ordering::Relaxed);
+}
+
+pub fn third_person() -> bool {
+    THIRD_PERSON.load(Ordering::Relaxed)
 }
 
 pub fn set_guest_input(uuid: u128, flags: i32) {
@@ -557,6 +569,7 @@ pub fn clear() {
     lock(&RIDERS).clear();
     lock(&GUEST_INPUT).clear();
     clear_local_drive();
+    set_third_person(false);
 }
 
 /// One line for `/car debug`: what the server has for `car` and what the

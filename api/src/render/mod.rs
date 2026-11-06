@@ -30,12 +30,13 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
         // The pose hasn't arrived yet: let vanilla draw for a moment.
         return Flow::Continue;
     };
-    if let Some(player) = host.player() {
-        if state::seated([player.x, player.y, player.z], snap.cur.pos) {
-            // The camera is inside the car: drawing the body would fill the
-            // screen with its own panels.
-            return Flow::Cancel;
-        }
+    if let Some(player) = host.player()
+        && state::seated([player.x, player.y, player.z], snap.cur.pos)
+        && !state::third_person()
+    {
+        // The camera is inside the car: drawing the body would fill the
+        // screen with its own panels. In third person the car stays visible.
+        return Flow::Cancel;
     }
 
     let pose = snap.pose(event.mob.partial);
