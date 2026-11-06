@@ -1,14 +1,19 @@
 //! The engine and the automatic gearbox.
 
 use super::tuning::{
-    DRIVETRAIN_EFFICIENCY, FINAL_DRIVE, GEAR_RATIOS, IDLE_RPM, PEAK_TORQUE, REDLINE_RPM,
-    REVERSE_RATIO, SHIFT_TIME, UPSHIFT_RPM, WHEEL_RADIUS,
+    DRIVETRAIN_EFFICIENCY, FINAL_DRIVE, GEAR_RATIOS, IDLE_RPM, LAUNCH_RPM, PEAK_TORQUE,
+    REDLINE_RPM, REVERSE_RATIO, SHIFT_TIME, UPSHIFT_RPM, WHEEL_RADIUS,
 };
 
 /// Full-throttle torque at `rpm`, N m.
 pub fn torque(rpm: f64) -> f64 {
     let x = (rpm - 3800.0) / 3600.0;
     PEAK_TORQUE * (0.55 + 0.45 * (1.0 - x * x).max(0.0))
+}
+
+/// Torque the engine drags with when the throttle is shut, N m.
+pub fn engine_brake(rpm: f64) -> f64 {
+    torque(rpm) * 0.12
 }
 
 /// What the gearbox asks the wheels to do this substep.
@@ -111,17 +116,23 @@ impl Gearbox {
         }
 
         let ratio = self.ratio();
-        let mut rpm = self.wheel_rpm(forward_speed);
-        if rpm < IDLE_RPM || self.shift_timer > 0.0 {
-            // The torque converter slips; a shift drops the engine to idle.
-            rpm = IDLE_RPM + pedal * 900.0;
-        }
+        let wheel_rpm = self.wheel_rpm(forward_speed);
+        // A slipping clutch holds the engine above idle while pulling away.
+        let rpm = if wheel_rpm < IDLE_RPM || self.shift_timer > 0.0 {
+            (IDLE_RPM + pedal * (LAUNCH_RPM - IDLE_RPM)).max(IDLE_RPM)
+        } else {
+            wheel_rpm
+        };
         self.rpm = rpm.clamp(IDLE_RPM, REDLINE_RPM);
 
+        let gear_force = ratio * FINAL_DRIVE * DRIVETRAIN_EFFICIENCY / WHEEL_RADIUS;
         let mut force = 0.0;
         if self.shift_timer <= 0.0 && pedal > 0.0 && self.rpm < REDLINE_RPM {
-            force = torque(self.rpm) * ratio * FINAL_DRIVE * DRIVETRAIN_EFFICIENCY / WHEEL_RADIUS
-                * pedal;
+            force = torque(self.rpm) * gear_force * pedal;
+        }
+        // Off the throttle the engine and drivetrain drag on the wheels.
+        if pedal <= 0.05 && forward_speed.abs() > 0.5 && self.shift_timer <= 0.0 {
+            force -= forward_speed.signum() * engine_brake(self.rpm) * gear_force;
         }
         if reverse {
             force = -force;
@@ -193,5 +204,12 @@ mod tests {
         g.shift_timer = 0.2;
         let d = g.update(1.0, 0.0, 0.0, 0.05);
         assert_eq!(d.force, 0.0);
+    }
+
+    #[test]
+    fn coasting_drags_on_the_wheels() {
+        let mut g = Gearbox::default();
+        let d = g.update(0.0, 0.0, 10.0, 0.05);
+        assert!(d.force < 0.0, "{}", d.force);
     }
 }

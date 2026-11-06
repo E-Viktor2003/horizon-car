@@ -52,22 +52,30 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
     draw.rotate_about([1.0, 0.0, 0.0], pose.pitch.to_degrees() as f32, PIVOT);
     draw.rotate_about([0.0, 0.0, 1.0], pose.roll.to_degrees() as f32, PIVOT);
 
-    let steer = -(pose.steer.to_degrees() as f32);
+    // The anchor is the contact plane; the body squats on its springs below
+    // it, and the wheels ride back up by their own compression.
+    draw.translate([0.0, -(pose.ride as f32), 0.0]);
+
+    // Positive steer is to the right; the draw's yaw turns left.
+    let steer_left = -(pose.steer_l.to_degrees() as f32);
+    let steer_right = -(pose.steer_r.to_degrees() as f32);
     wheel(
         host,
         draw,
         model_data::WHEEL_FL,
         model_data::PIVOT_FL,
-        steer,
-        pose.spin_f,
+        steer_left,
+        pose.spin[0],
+        pose.compression[0] as f32,
     );
     wheel(
         host,
         draw,
         model_data::WHEEL_FR,
         model_data::PIVOT_FR,
-        steer,
-        pose.spin_f,
+        steer_right,
+        pose.spin[1],
+        pose.compression[1] as f32,
     );
     wheel(
         host,
@@ -75,7 +83,8 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
         model_data::WHEEL_RL,
         model_data::PIVOT_RL,
         0.0,
-        pose.spin_r,
+        pose.spin[2],
+        pose.compression[2] as f32,
     );
     wheel(
         host,
@@ -83,7 +92,8 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
         model_data::WHEEL_RR,
         model_data::PIVOT_RR,
         0.0,
-        pose.spin_r,
+        pose.spin[3],
+        pose.compression[3] as f32,
     );
 
     // The body alone does not lean again: the whole frame above already did.
@@ -108,10 +118,15 @@ fn wheel(
     pivot: [f32; 3],
     steer: f32,
     spin: f64,
+    compression: f32,
 ) {
     // The generated quads are relative to the wheel's own pivot, so put the
-    // pivot under the origin and turn there: that is the axle.
+    // pivot under the origin and turn there: that is the axle. The ride
+    // height first lifts the wheel along the body's up axis.
     draw.push();
+    if compression != 0.0 {
+        draw.translate([0.0, compression, 0.0]);
+    }
     draw.translate(pivot);
     if steer != 0.0 {
         draw.rotate_about([0.0, 1.0, 0.0], steer, [0.0; 3]);

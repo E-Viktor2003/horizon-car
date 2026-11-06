@@ -10,9 +10,11 @@ use crate::state::{self, Pose, Snapshot};
 
 pub const CHANNEL: &str = "horizon_car:state";
 const MAGIC: [u8; 4] = *b"HCAR";
-const VERSION: u8 = 1;
+/// pos (3), yaw/pitch/roll (3), four spins, four compressions, two steers.
+const POSE_FIELDS: usize = 3 + 3 + 4 + 4 + 2 + 1;
+const VERSION: u8 = 2;
 /// id + two poses + speed, rpm, gear, flags.
-const RECORD: usize = 4 + 9 * 4 * 2 + 4 + 4 + 1 + 1;
+const RECORD: usize = 4 + POSE_FIELDS * 4 * 2 + 4 + 4 + 1 + 1;
 
 pub fn broadcast(host: &mut dyn Host) {
     let guests = host.server_players();
@@ -53,17 +55,13 @@ fn encode(snapshots: &[Snapshot]) -> Vec<u8> {
 }
 
 fn pose(out: &mut Vec<u8>, pose: &Pose) {
-    for value in [
-        pose.pos[0],
-        pose.pos[1],
-        pose.pos[2],
-        pose.yaw,
-        pose.pitch,
-        pose.roll,
-        pose.spin_f,
-        pose.spin_r,
-        pose.steer,
-    ] {
+    let mut values = Vec::with_capacity(POSE_FIELDS);
+    values.extend_from_slice(&[pose.pos[0], pose.pos[1], pose.pos[2]]);
+    values.extend_from_slice(&[pose.yaw, pose.pitch, pose.roll]);
+    values.extend_from_slice(&pose.spin);
+    values.extend_from_slice(&pose.compression);
+    values.extend_from_slice(&[pose.steer_l, pose.steer_r, pose.ride]);
+    for value in values {
         out.extend_from_slice(&(value as f32).to_le_bytes());
     }
 }
@@ -127,7 +125,7 @@ impl Cursor<'_> {
     }
 
     fn pose(&mut self) -> Option<Pose> {
-        let mut values = [0.0f64; 9];
+        let mut values = [0.0f64; POSE_FIELDS];
         for value in &mut values {
             *value = f64::from(self.f32()?);
         }
@@ -136,9 +134,11 @@ impl Cursor<'_> {
             yaw: values[3],
             pitch: values[4],
             roll: values[5],
-            spin_f: values[6],
-            spin_r: values[7],
-            steer: values[8],
+            spin: [values[6], values[7], values[8], values[9]],
+            compression: [values[10], values[11], values[12], values[13]],
+            steer_l: values[14],
+            steer_r: values[15],
+            ride: values[16],
         })
     }
 }
@@ -155,18 +155,22 @@ mod tests {
                 yaw: 0.25,
                 pitch: -0.01,
                 roll: 0.02,
-                spin_f: 1.5,
-                spin_r: 1.25,
-                steer: 0.1,
+                spin: [1.5, 1.6, 1.25, 1.35],
+                compression: [0.08, 0.07, 0.09, 0.06],
+                steer_l: 0.1,
+                steer_r: 0.12,
+                ride: 0.08,
             },
             cur: Pose {
                 pos: [1.5, 2.0, 3.5],
                 yaw: 0.3,
                 pitch: 0.0,
                 roll: -0.02,
-                spin_f: 2.0,
-                spin_r: 1.75,
-                steer: 0.12,
+                spin: [2.0, 2.1, 1.75, 1.85],
+                compression: [0.07, 0.08, 0.06, 0.09],
+                steer_l: 0.12,
+                steer_r: 0.14,
+                ride: 0.09,
             },
             speed: 12.5,
             gear: 3,

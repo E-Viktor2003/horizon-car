@@ -36,21 +36,30 @@ pub struct Pose {
     pub yaw: f64,
     pub pitch: f64,
     pub roll: f64,
-    pub spin_f: f64,
-    pub spin_r: f64,
-    pub steer: f64,
+    /// Angle of each wheel around its axle, FL, FR, RL, RR.
+    pub spin: [f64; 4],
+    /// Suspension compression of each wheel, in blocks.
+    pub compression: [f64; 4],
+    /// Steering angle of the two front wheels, radians, positive right.
+    pub steer_l: f64,
+    pub steer_r: f64,
+    /// How far the body squats on its springs, in blocks.
+    pub ride: f64,
 }
 
 impl Pose {
     pub fn of(vehicle: &Vehicle) -> Self {
+        let wheel = |i: usize| &vehicle.wheels[i];
         Self {
-            pos: vehicle.pos,
-            yaw: vehicle.yaw,
-            pitch: vehicle.pitch,
-            roll: vehicle.roll,
-            spin_f: vehicle.spin_f,
-            spin_r: vehicle.spin_r,
-            steer: vehicle.steer,
+            pos: vehicle.origin(),
+            yaw: vehicle.yaw(),
+            pitch: vehicle.pitch(),
+            roll: vehicle.roll(),
+            spin: std::array::from_fn(|i| wheel(i).spin),
+            compression: std::array::from_fn(|i| wheel(i).compression),
+            steer_l: wheel(0).steer,
+            steer_r: wheel(1).steer,
+            ride: vehicle.ride(),
         }
     }
 
@@ -68,9 +77,11 @@ impl Pose {
             yaw: physics::normalize(self.yaw + physics::normalize(next.yaw - self.yaw) * t),
             pitch: mix(self.pitch, next.pitch),
             roll: mix(self.roll, next.roll),
-            spin_f: physics::normalize(spin(self.spin_f, next.spin_f)),
-            spin_r: physics::normalize(spin(self.spin_r, next.spin_r)),
-            steer: mix(self.steer, next.steer),
+            spin: std::array::from_fn(|i| physics::normalize(spin(self.spin[i], next.spin[i]))),
+            compression: std::array::from_fn(|i| mix(self.compression[i], next.compression[i])),
+            steer_l: mix(self.steer_l, next.steer_l),
+            steer_r: mix(self.steer_r, next.steer_r),
+            ride: mix(self.ride, next.ride),
         }
     }
 }
@@ -311,7 +322,7 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
     // The entity is the authority on where the car is: whatever the game let
     // it do last tick is where the physics starts this tick.
     if let Some(actual) = host.entity_position(entity) {
-        car.vehicle.pos = actual;
+        car.vehicle.set_origin(actual);
     }
 
     // A rider entity that is gone (logged out, removed, chunk unloaded) is
@@ -327,10 +338,11 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
     // first tick; the inputs come from the client or the guest's packets.
     let local = local_drive(car.id);
     let rider = rider(car.id);
+    let origin = car.vehicle.origin();
     let guest_seat = host
         .server_players()
         .iter()
-        .find(|g| g.dimension == car.dimension && seated_exact(g.position, car.vehicle.pos))
+        .find(|g| g.dimension == car.dimension && seated_exact(g.position, origin))
         .map(|g| g.uuid);
     let occupied = local.is_some() || rider.is_some() || guest_seat.is_some();
     let mut controls = Controls {
@@ -344,53 +356,40 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
         merge(&mut controls, guest);
     }
 
-    let mut frame = ground::sample(host, car.vehicle.pos, car.vehicle.yaw);
-    frame.blocked = false;
-    let before = car.vehicle.pos;
-    let dt = 0.05 / 4.0;
-    for _ in 0..4 {
-        car.vehicle.step(&controls, &frame, dt);
+    let ground = ground::sample(host, car.vehicle.hubs());
+    let before = car.vehicle.origin();
+    for _ in 0..physics::SUBSTEPS {
+        car.vehicle.step(&controls, &ground, physics::STEP);
     }
 
     // The pig's box is small and the car's nose is long: stop the body from
     // driving through a wall the pig would miss.
-    if ground::blocked(host, car.vehicle.pos, car.vehicle.yaw) {
-        if !ground::blocked(host, before, car.vehicle.yaw) {
-            car.vehicle.pos[0] = before[0];
-            car.vehicle.pos[2] = before[2];
+    let after = car.vehicle.origin();
+    if ground::blocked(host, after, car.vehicle.yaw()) {
+        if !ground::blocked(host, before, car.vehicle.yaw()) {
+            car.vehicle.set_origin(before);
         }
         // Damp, do not bounce: a car brushing a wall used to flip its speed
         // every other tick, and that read as the whole car shaking.
-        car.vehicle.vel[0] *= 0.15;
-        car.vehicle.vel[2] *= 0.15;
-        car.vehicle.yaw_rate *= 0.4;
+        car.vehicle.body.vel.x *= 0.15;
+        car.vehicle.body.vel.z *= 0.15;
+        car.vehicle.body.omega.y *= 0.4;
     }
 
     // A car with nobody in it stays put.
-    if !occupied && car.vehicle.speed < 0.6 {
-        car.vehicle.vel[0] = 0.0;
-        car.vehicle.vel[2] = 0.0;
-        car.vehicle.yaw_rate = 0.0;
+    if !occupied && car.vehicle.forward_speed().abs() < 0.6 {
+        car.vehicle.body.vel = physics::vec::V3::ZERO;
+        car.vehicle.body.omega = physics::vec::V3::ZERO;
     }
 
     // Ask the pig to go where the physics went. `entity_set_velocity` takes
     // blocks a tick, so the error over one tick is the velocity to set; a
     // clamp keeps a teleport-sized jump from throwing the rider.
-    let target = car.vehicle.pos;
+    let target = car.vehicle.origin();
     if let Some(actual) = host.entity_position(entity) {
-        // The body's own height is already filtered towards the ground in
-        // `step`; servo to that, not to the raw sample, or every snow layer
-        // and step would yank the chassis up and down once a tick. Never aim
-        // below the ground just sampled, though: a pig pushed into a block
-        // gets shoved back out and the car shakes.
-        let target_y = if frame.heights.iter().any(|h| h.is_finite()) {
-            (frame.target_y + 0.01).max(car.vehicle.pos[1])
-        } else {
-            car.vehicle.pos[1]
-        };
         let vx = (target[0] - actual[0]).clamp(-2.5, 2.5);
         let vz = (target[2] - actual[2]).clamp(-2.5, 2.5);
-        let vy = (target_y - actual[1]).clamp(-0.3, 0.3);
+        let vy = (target[1] - actual[1]).clamp(-0.3, 0.3);
         host.entity_set_velocity(entity, [vx, vy, vz]);
     }
 
@@ -445,7 +444,7 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
 
 /// The tag that carries a car's yaw and gear across a save.
 pub fn state_tag(vehicle: &Vehicle) -> String {
-    let centi = (vehicle.yaw.to_degrees().rem_euclid(360.0) * 100.0).round() as i64 % 36_000;
+    let centi = (vehicle.yaw().to_degrees().rem_euclid(360.0) * 100.0).round() as i64 % 36_000;
     format!("hc_s{centi:05}_{}", vehicle.gearbox.gear)
 }
 
@@ -556,11 +555,12 @@ pub fn nearest_car(pos: [f64; 3], dimension: &str, reach: f64) -> Option<(u32, [
         if car.dimension != dimension {
             continue;
         }
-        let dx = car.vehicle.pos[0] - pos[0];
-        let dz = car.vehicle.pos[2] - pos[2];
+        let origin = car.vehicle.origin();
+        let dx = origin[0] - pos[0];
+        let dz = origin[2] - pos[2];
         let d = dx * dx + dz * dz;
         if d <= reach * reach && best.as_ref().is_none_or(|(b, _, _)| d < *b) {
-            best = Some((d, car.id, car.vehicle.pos));
+            best = Some((d, car.id, origin));
         }
     }
     best.map(|(_, id, pos)| (id, pos))
@@ -679,9 +679,11 @@ mod tests {
             yaw,
             pitch: 0.0,
             roll: 0.0,
-            spin_f: 0.0,
-            spin_r: 0.0,
-            steer: 0.0,
+            spin: [0.0; 4],
+            compression: [0.0; 4],
+            steer_l: 0.0,
+            steer_r: 0.0,
+            ride: 0.0,
         }
     }
 
