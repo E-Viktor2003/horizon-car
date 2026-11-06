@@ -359,8 +359,10 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
             car.vehicle.pos[0] = before[0];
             car.vehicle.pos[2] = before[2];
         }
-        car.vehicle.vel[0] = -car.vehicle.vel[0] * 0.15;
-        car.vehicle.vel[2] = -car.vehicle.vel[2] * 0.15;
+        // Damp, do not bounce: a car brushing a wall used to flip its speed
+        // every other tick, and that read as the whole car shaking.
+        car.vehicle.vel[0] *= 0.15;
+        car.vehicle.vel[2] *= 0.15;
         car.vehicle.yaw_rate *= 0.4;
     }
 
