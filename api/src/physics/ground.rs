@@ -43,18 +43,18 @@ pub fn sample(host: &dyn Host, pos: [f64; 3], yaw: f64) -> Frame {
             friction[i] = tuning::friction_of(&block);
         }
     }
-    let mut sum = 0.0;
-    let mut count = 0;
-    for h in heights {
-        if h.is_finite() {
-            sum += h;
-            count += 1;
+    // A wheel hanging over a drop must not drag the car down: the mean of
+    // four samples follows one cliff. Sit on the middle two instead.
+    let mut known: Vec<f64> = heights.iter().copied().filter(|h| h.is_finite()).collect();
+    known.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let target_y = match known.len() {
+        0 => pos[1],
+        1 => known[0],
+        2 => (known[0] + known[1]) * 0.5,
+        _ => {
+            let mid = known.len() / 2;
+            (known[mid - 1] + known[mid]) * 0.5
         }
-    }
-    let target_y = if count > 0 {
-        sum / f64::from(count)
-    } else {
-        pos[1]
     };
     Frame {
         heights,

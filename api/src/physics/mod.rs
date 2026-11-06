@@ -253,7 +253,15 @@ impl Vehicle {
             self.pos[1] += self.vel[1] * dt;
         }
 
-        let h = frame.heights;
+        // A wheel hanging over a drop or clipping a bank is not a slope: keep
+        // its height near the body before reading the attitude off the four.
+        let h = frame.heights.map(|v| {
+            if v.is_finite() {
+                v.clamp(frame.target_y - 0.75, frame.target_y + 0.75)
+            } else {
+                v
+            }
+        });
         let front = mean(h[0], h[1]);
         let rear = mean(h[2], h[3]);
         let left = mean(h[0], h[2]);
