@@ -83,7 +83,9 @@ fn ground_at(host: &dyn Host, x: f64, z: f64, from_y: f64) -> Option<(f64, Strin
         return None;
     }
     let (lx, lz) = (x - f64::from(bx), z - f64::from(bz));
-    let limit = from_y + f64::from(RISE) + 1.0;
+    // A wheel may step up by RISE, never onto a block above that: otherwise a
+    // ceiling under the same column would read as the ground.
+    let limit = from_y + f64::from(RISE) + 0.05;
     for by in (stop..=start).rev() {
         let mut top: Option<f64> = None;
         for b in host.block_collision([bx, by, bz]) {

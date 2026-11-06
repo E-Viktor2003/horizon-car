@@ -92,7 +92,7 @@ fn place(player: &Who, event: &mut PlayerCommandEvent<'_>) {
 }
 
 fn remove(player: &Who, event: &mut PlayerCommandEvent<'_>) {
-    match state::nearest_car(player.position, 12.0) {
+    match state::nearest_car(player.position, &player.dimension, 12.0) {
         Some((id, _)) => {
             state::queue(Action::Remove { id });
             event.replies.push(Text::literal("Убираю машину."));

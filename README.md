@@ -7,6 +7,8 @@
 
 Модель — `low_poly_small_car.glb` (low-poly, 12 материалов).
 
+Репозиторий и релизы: <https://github.com/E-Viktor2003/horizon-car>.
+
 ## Что уже заложено
 
 - Серверная физика 20 Гц с 4 подшагами: двигатель с кривой момента, 6-ступенчатый
@@ -162,10 +164,12 @@ python3 tools/package_native.py --check dist/horizon_car-0.1.0.hnmod
 
 ## Установка
 
-1. Скачайте `horizon_car-0.1.0.hnmod` из Release или артефакта Actions.
+1. Скачайте `horizon_car-0.1.0.hnmod` из
+   [Release](https://github.com/E-Viktor2003/horizon-car/releases) или
+   артефакта Actions.
 2. Положите файл в `<instance>/horizon-native-mods/` (Mods page → **Open
    folder**) или установите с GitHub:
-   `horizon-launcher mods add-github <url> --mod horizon_car --trust-native-code`.
+   `horizon-launcher mods add-github https://github.com/E-Viktor2003/horizon-car --trust-native-code`.
 3. В лаунчере: **Mods** → включить native-моды → **Build** для инстанса.
 4. Первая сборка скачивает Rust и компилирует игру (20–30 минут).
 

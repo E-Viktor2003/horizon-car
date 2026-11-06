@@ -322,7 +322,7 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
         host.entity_set_velocity(entity, [vx, vy, vz]);
     }
 
-    car.brake_light = controls.brake > 0.05 || controls.handbrake;
+    car.brake_light = driver.is_some() && (controls.brake > 0.05 || controls.handbrake);
 
     // Publish the pose for the client.
     let pose = Pose::of(&car.vehicle);
@@ -507,10 +507,15 @@ pub fn note_join(id: u32, dimension: &str) {
 }
 
 /// The nearest car to `pos` within `reach`, with its id and position.
-pub fn nearest_car(pos: [f64; 3], reach: f64) -> Option<(u32, [f64; 3])> {
+/// The nearest car to `pos` in `dimension` within `reach`, with its id and
+/// position.
+pub fn nearest_car(pos: [f64; 3], dimension: &str, reach: f64) -> Option<(u32, [f64; 3])> {
     let cars = lock(&CARS);
     let mut best: Option<(f64, u32, [f64; 3])> = None;
     for car in cars.iter() {
+        if car.dimension != dimension {
+            continue;
+        }
         let dx = car.vehicle.pos[0] - pos[0];
         let dz = car.vehicle.pos[2] - pos[2];
         let d = dx * dx + dz * dz;
