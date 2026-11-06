@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use horizon_client::mod_api::Host;
 
-use crate::physics::{self, ground, tuning, Controls, Vehicle};
+use crate::physics::{self, Controls, Vehicle, ground, tuning};
 
 pub const CAR_TAG: &str = "horizon_car";
 pub const CAR_NAME: &str = "horizon_car";
@@ -17,14 +17,6 @@ pub const MAX_CARS: usize = 8;
 
 /// The height of a pig's saddle above its feet (`getPassengerAttachmentPoint`).
 pub const SEAT_HEIGHT: f64 = 0.868_75;
-
-/// Who is driving a car this tick. The host has no UUID in the server hooks
-/// that `Host::player` serves, so it is its own case.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Driver {
-    Host,
-    Guest(u128),
-}
 
 pub struct Car {
     pub id: u32,
@@ -123,42 +115,67 @@ static CARS: Mutex<Vec<Car>> = Mutex::new(Vec::new());
 static SNAPSHOTS: Mutex<Vec<Snapshot>> = Mutex::new(Vec::new());
 static PENDING: Mutex<Vec<Action>> = Mutex::new(Vec::new());
 static CHECK_JOIN: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
-static KEYS: Mutex<u32> = Mutex::new(0);
+/// Which entity rides which car, from the server's mount hook.
+static RIDERS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+/// The window's own pedals, while its player sits in a car.
+static LOCAL_DRIVE: Mutex<Option<(u32, Controls)>> = Mutex::new(None);
+/// The last input packet of each LAN guest, by UUID.
 static GUEST_INPUT: Mutex<Vec<(u128, i32)>> = Mutex::new(Vec::new());
-
-pub const KEY_FORWARD: u32 = 1;
-pub const KEY_BACK: u32 = 2;
-pub const KEY_LEFT: u32 = 4;
-pub const KEY_RIGHT: u32 = 8;
-pub const KEY_HANDBRAKE: u32 = 16;
 
 fn lock<T>(cell: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     cell.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A keyboard key the mod watches. Physical keys, as vanilla binds them.
-pub fn key_bit(name: &str) -> Option<u32> {
-    Some(match name {
-        "key.keyboard.w" => KEY_FORWARD,
-        "key.keyboard.s" => KEY_BACK,
-        "key.keyboard.a" => KEY_LEFT,
-        "key.keyboard.d" => KEY_RIGHT,
-        "key.keyboard.space" => KEY_HANDBRAKE,
-        _ => return None,
-    })
-}
-
-pub fn set_key(bit: u32, pressed: bool) {
-    let mut keys = lock(&KEYS);
-    if pressed {
-        *keys |= bit;
-    } else {
-        *keys &= !bit;
+/// The pedals from the local player's movement input: `forward` is W, `strafe`
+/// is A (positive) and D (negative), `jump` is the handbrake.
+pub fn controls_from_input(forward: f32, strafe: f32, jump: bool) -> Controls {
+    Controls {
+        throttle: f64::from(forward.max(0.0)),
+        brake: f64::from((-forward).max(0.0)),
+        steer: f64::from(-strafe).clamp(-1.0, 1.0),
+        handbrake: jump,
     }
 }
 
-pub fn clear_keys() {
-    *lock(&KEYS) = 0;
+/// The pedals from a guest's `PlayerInput` flag bits.
+pub fn controls_from_flags(flags: u32) -> Controls {
+    Controls {
+        throttle: f64::from(u8::from(flags & 1 != 0)),
+        brake: f64::from(u8::from(flags & 2 != 0)),
+        steer: f64::from(i8::from(flags & 8 != 0) - i8::from(flags & 4 != 0)),
+        handbrake: flags & 16 != 0,
+    }
+}
+
+pub fn set_local_drive(car: u32, controls: Controls) {
+    *lock(&LOCAL_DRIVE) = Some((car, controls));
+}
+
+pub fn clear_local_drive() {
+    *lock(&LOCAL_DRIVE) = None;
+}
+
+/// The local window's pedals, when its player is in `car`.
+pub fn local_drive(car: u32) -> Option<Controls> {
+    lock(&LOCAL_DRIVE)
+        .filter(|(id, _)| *id == car)
+        .map(|(_, controls)| controls)
+}
+
+pub fn set_rider(car: u32, rider: Option<u32>) {
+    let mut riders = lock(&RIDERS);
+    riders.retain(|(id, _)| *id != car);
+    if let Some(rider) = rider {
+        riders.push((car, rider));
+    }
+}
+
+/// The entity riding `car`, from the mount hook.
+pub fn rider(car: u32) -> Option<u32> {
+    lock(&RIDERS)
+        .iter()
+        .find(|(id, _)| *id == car)
+        .map(|(_, rider)| *rider)
 }
 
 pub fn set_guest_input(uuid: u128, flags: i32) {
@@ -168,6 +185,22 @@ pub fn set_guest_input(uuid: u128, flags: i32) {
     } else {
         input.push((uuid, flags));
     }
+}
+
+/// A guest's pedals, if they sent any input this session.
+pub fn guest_controls(uuid: u128) -> Option<Controls> {
+    let input = lock(&GUEST_INPUT);
+    input
+        .iter()
+        .find(|(id, _)| *id == uuid)
+        .map(|(_, flags)| controls_from_flags(*flags as u32))
+}
+
+fn merge(into: &mut Controls, other: Controls) {
+    into.throttle = into.throttle.max(other.throttle);
+    into.brake = into.brake.max(other.brake);
+    into.steer = (into.steer + other.steer).clamp(-1.0, 1.0);
+    into.handbrake |= other.handbrake;
 }
 
 pub fn queue(action: Action) {
@@ -269,14 +302,35 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
         car.vehicle.pos = actual;
     }
 
-    let driver = find_driver(host, car);
-    let controls = match driver {
-        Some(driver) => controls(host, driver),
-        None => Controls {
-            handbrake: true,
-            ..Default::default()
-        },
+    // A rider entity that is gone (logged out, removed, chunk unloaded) is
+    // no driver any more.
+    if let Some(rider) = rider(car.id)
+        && host.entity(rider).is_none()
+    {
+        set_rider(car.id, None);
+    }
+    // The window's pedals, a guest the server's player list has on the seat,
+    // and the mount hook's record all say the car is taken. `entity_mount`
+    // fires before the seat lands, so the record alone is enough for the
+    // first tick; the inputs come from the client or the guest's packets.
+    let local = local_drive(car.id);
+    let rider = rider(car.id);
+    let guest_seat = host
+        .server_players()
+        .iter()
+        .find(|g| g.dimension == car.dimension && seated_exact(g.position, car.vehicle.pos))
+        .map(|g| g.uuid);
+    let occupied = local.is_some() || rider.is_some() || guest_seat.is_some();
+    let mut controls = Controls {
+        handbrake: !occupied,
+        ..Default::default()
     };
+    if let Some(local) = local {
+        merge(&mut controls, local);
+    }
+    if let Some(guest) = guest_seat.and_then(guest_controls) {
+        merge(&mut controls, guest);
+    }
 
     let mut frame = ground::sample(host, car.vehicle.pos, car.vehicle.yaw);
     frame.blocked = false;
@@ -299,7 +353,7 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
     }
 
     // A car with nobody in it stays put.
-    if driver.is_none() && car.vehicle.speed < 0.6 {
+    if !occupied && car.vehicle.speed < 0.6 {
         car.vehicle.vel[0] = 0.0;
         car.vehicle.vel[2] = 0.0;
         car.vehicle.yaw_rate = 0.0;
@@ -322,7 +376,7 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
         host.entity_set_velocity(entity, [vx, vy, vz]);
     }
 
-    car.brake_light = driver.is_some() && (controls.brake > 0.05 || controls.handbrake);
+    car.brake_light = occupied && (controls.brake > 0.05 || controls.handbrake);
 
     // Publish the pose for the client.
     let pose = Pose::of(&car.vehicle);
@@ -375,42 +429,6 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
 pub fn state_tag(vehicle: &Vehicle) -> String {
     let centi = (vehicle.yaw.to_degrees().rem_euclid(360.0) * 100.0).round() as i64 % 36_000;
     format!("hc_s{centi:05}_{}", vehicle.gearbox.gear)
-}
-
-fn find_driver(host: &dyn Host, car: &Car) -> Option<Driver> {
-    if let Some(player) = host.player() {
-        if player.dimension == car.dimension.as_str()
-            && seated_exact([player.x, player.y, player.z], car.vehicle.pos)
-        {
-            return Some(Driver::Host);
-        }
-    }
-    for guest in host.server_players() {
-        if guest.dimension == car.dimension && seated_exact(guest.position, car.vehicle.pos) {
-            return Some(Driver::Guest(guest.uuid));
-        }
-    }
-    None
-}
-
-fn controls(_host: &dyn Host, driver: Driver) -> Controls {
-    let flags: u32 = match driver {
-        Driver::Host => *lock(&KEYS),
-        Driver::Guest(uuid) => {
-            let input = lock(&GUEST_INPUT);
-            input
-                .iter()
-                .find(|(id, _)| *id == uuid)
-                .map(|(_, f)| *f as u32)
-                .unwrap_or(0)
-        }
-    };
-    Controls {
-        throttle: f64::from(u8::from(flags & KEY_FORWARD != 0)),
-        brake: f64::from(u8::from(flags & KEY_BACK != 0)),
-        steer: f64::from(i8::from(flags & KEY_RIGHT != 0) - i8::from(flags & KEY_LEFT != 0)),
-        handbrake: flags & KEY_HANDBRAKE != 0,
-    }
 }
 
 fn process_actions(host: &mut dyn Host) {
@@ -466,6 +484,10 @@ pub fn parse_saved(tag: &str) -> (f64, i32) {
 pub fn remove(id: u32) {
     lock(&CARS).retain(|c| c.id != id);
     lock(&SNAPSHOTS).retain(|s| s.id != id);
+    set_rider(id, None);
+    if lock(&LOCAL_DRIVE).is_some_and(|(car, _)| car == id) {
+        clear_local_drive();
+    }
 }
 
 pub fn insert(car: Car) {
@@ -532,8 +554,20 @@ pub fn clear() {
     lock(&SNAPSHOTS).clear();
     lock(&PENDING).clear();
     lock(&CHECK_JOIN).clear();
+    lock(&RIDERS).clear();
     lock(&GUEST_INPUT).clear();
-    clear_keys();
+    clear_local_drive();
+}
+
+/// One line for `/car debug`: what the server has for `car` and what the
+/// window and the guest input hold.
+pub fn debug(car: u32, player: u128) -> String {
+    format!(
+        "car {car}: rider={:?} local={:?} guest={:?}",
+        rider(car),
+        local_drive(car),
+        guest_controls(player)
+    )
 }
 
 #[cfg(test)]
@@ -581,5 +615,42 @@ mod tests {
         // On the saddle but a block and a half ahead: not this car's driver.
         assert!(!seated_exact([11.5, 20.0 + SEAT_HEIGHT, 10.0], car));
     }
-}
 
+    #[test]
+    fn the_window_pedals_map_to_w_s_a_d_space() {
+        // W, D, space.
+        let c = controls_from_input(1.0, -1.0, true);
+        assert_eq!(c.throttle, 1.0);
+        assert_eq!(c.brake, 0.0);
+        assert_eq!(c.steer, 1.0);
+        assert!(c.handbrake);
+        // S, A.
+        let c = controls_from_input(-1.0, 1.0, false);
+        assert_eq!(c.throttle, 0.0);
+        assert_eq!(c.brake, 1.0);
+        assert_eq!(c.steer, -1.0);
+        assert!(!c.handbrake);
+    }
+
+    #[test]
+    fn the_guest_flag_bits_map_to_the_same_pedals() {
+        // forward 1, backward 2, left 4, right 8, jump 16.
+        let c = controls_from_flags(1 | 8 | 16);
+        assert_eq!(c.throttle, 1.0);
+        assert_eq!(c.brake, 0.0);
+        assert_eq!(c.steer, 1.0);
+        assert!(c.handbrake);
+        let c = controls_from_flags(2 | 4);
+        assert_eq!(c.brake, 1.0);
+        assert_eq!(c.steer, -1.0);
+        assert!(!c.handbrake);
+    }
+
+    #[test]
+    fn two_input_sources_add_up_without_oversteering() {
+        let mut c = controls_from_input(1.0, 0.0, false);
+        merge(&mut c, controls_from_flags(1 | 8));
+        assert_eq!(c.throttle, 1.0);
+        assert_eq!(c.steer, 1.0);
+    }
+}

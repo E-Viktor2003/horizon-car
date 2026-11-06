@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use horizon_client::mod_api::{Compound, Host, Tag};
 
-use crate::physics::{ground, Vehicle};
-use crate::state::{self, Car, CAR_NAME, CAR_TAG, MAX_CARS};
+use crate::physics::{Vehicle, ground};
+use crate::state::{self, CAR_NAME, CAR_TAG, Car, MAX_CARS};
 
 /// Spawn a car at `pos`, snapped to the ground, facing `yaw` radians.
 pub fn spawn(host: &mut dyn Host, dimension: &str, pos: [f64; 3], yaw: f64) -> Option<u32> {
@@ -80,14 +80,15 @@ pub fn car_nbt(yaw: f64) -> Compound {
         "Tags".into(),
         Tag::List(vec![
             Tag::String(CAR_TAG.into()),
-            Tag::String(state::state_tag(&Vehicle::new([0.0; 3], yaw)).as_str().into()),
+            Tag::String(
+                state::state_tag(&Vehicle::new([0.0; 3], yaw))
+                    .as_str()
+                    .into(),
+            ),
         ]),
     );
     let mut attributes = BTreeMap::new();
-    attributes.insert(
-        "id".into(),
-        Tag::String("minecraft:movement_speed".into()),
-    );
+    attributes.insert("id".into(), Tag::String("minecraft:movement_speed".into()));
     attributes.insert("base".into(), Tag::Double(0.0f64.to_bits()));
     nbt.insert(
         "attributes".into(),
@@ -167,7 +168,10 @@ mod tests {
         assert!(matches!(tag(&nbt, "NoGravity"), Some(Tag::Byte(1))));
         assert!(matches!(tag(&nbt, "Silent"), Some(Tag::Byte(1))));
         assert!(matches!(tag(&nbt, "Invulnerable"), Some(Tag::Byte(1))));
-        assert!(matches!(tag(&nbt, "PersistenceRequired"), Some(Tag::Byte(1))));
+        assert!(matches!(
+            tag(&nbt, "PersistenceRequired"),
+            Some(Tag::Byte(1))
+        ));
         assert!(matches!(tag(&nbt, "Saddle"), Some(Tag::Byte(1))));
     }
 

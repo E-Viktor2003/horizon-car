@@ -57,7 +57,8 @@ impl Gearbox {
 
     /// The engine speed the wheels back-drive at, rpm.
     pub fn wheel_rpm(&self, forward_speed: f64) -> f64 {
-        forward_speed.abs() / WHEEL_RADIUS * 60.0 / (std::f64::consts::TAU) * self.ratio()
+        forward_speed.abs() / WHEEL_RADIUS * 60.0 / (std::f64::consts::TAU)
+            * self.ratio()
             * FINAL_DRIVE
     }
 
@@ -79,8 +80,7 @@ impl Gearbox {
 
         // Reverse engages when S is held at a standstill and disengages on W.
         if self.gear >= 0 {
-            if brake > 0.5 && forward_speed.abs() < 0.4 && throttle < 0.05 && self.reverse_armed
-            {
+            if brake > 0.5 && forward_speed.abs() < 0.4 && throttle < 0.05 && self.reverse_armed {
                 self.reverse_timer += dt;
                 if self.reverse_timer > 0.35 {
                     self.gear = -1;

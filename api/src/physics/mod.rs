@@ -146,7 +146,11 @@ impl Vehicle {
 
         // Handbrake: the rear wheels lock and slide.
         let hand = c.handbrake;
-        let rear_brake = if hand { HANDBRAKE_ACCEL * MASS * 0.5 } else { 0.0 };
+        let rear_brake = if hand {
+            HANDBRAKE_ACCEL * MASS * 0.5
+        } else {
+            0.0
+        };
         if v_long.abs() > 0.02 {
             f_long -= v_long.signum() * rear_brake;
         }
@@ -167,10 +171,10 @@ impl Vehicle {
 
         // Axle loads with longitudinal transfer.
         let a_est = f_long / MASS;
-        let fz_f = (MASS * GRAVITY * B / WHEELBASE - MASS * a_est * CG_HEIGHT / WHEELBASE)
-            .max(300.0);
-        let fz_r = (MASS * GRAVITY * A / WHEELBASE + MASS * a_est * CG_HEIGHT / WHEELBASE)
-            .max(300.0);
+        let fz_f =
+            (MASS * GRAVITY * B / WHEELBASE - MASS * a_est * CG_HEIGHT / WHEELBASE).max(300.0);
+        let fz_r =
+            (MASS * GRAVITY * A / WHEELBASE + MASS * a_est * CG_HEIGHT / WHEELBASE).max(300.0);
 
         let grounded = frame.heights.iter().any(|h| h.is_finite());
         let mut mu_f = if grounded {
@@ -268,11 +272,10 @@ impl Vehicle {
         self.roll += (target_roll - self.roll) * k;
 
         // Wheels roll with the car; the handbrake locks the rear axle.
-        self.spin_f = (self.spin_f + v_long / WHEEL_RADIUS * dt)
-            .rem_euclid(std::f64::consts::TAU);
+        self.spin_f = (self.spin_f + v_long / WHEEL_RADIUS * dt).rem_euclid(std::f64::consts::TAU);
         if !hand || v_long.abs() < 0.05 {
-            self.spin_r = (self.spin_r + v_long / WHEEL_RADIUS * dt)
-                .rem_euclid(std::f64::consts::TAU);
+            self.spin_r =
+                (self.spin_r + v_long / WHEEL_RADIUS * dt).rem_euclid(std::f64::consts::TAU);
         }
 
         self.speed = (self.vel[0] * self.vel[0] + self.vel[2] * self.vel[2]).sqrt();
@@ -322,7 +325,14 @@ mod tests {
     #[test]
     fn full_throttle_accelerates_and_shifts_up() {
         let mut car = Vehicle::new([0.0; 3], 0.0);
-        step(&mut car, Controls { throttle: 1.0, ..Default::default() }, 4.0);
+        step(
+            &mut car,
+            Controls {
+                throttle: 1.0,
+                ..Default::default()
+            },
+            4.0,
+        );
         assert!(car.forward_speed() > 8.0, "speed {}", car.forward_speed());
         assert!(car.gearbox.gear >= 2);
         assert!(car.pos[2] > 5.0);
@@ -332,8 +342,19 @@ mod tests {
     fn braking_from_speed_stops_the_car() {
         let mut car = Vehicle::new([0.0; 3], 0.0);
         car.vel[2] = 20.0;
-        step(&mut car, Controls { brake: 1.0, ..Default::default() }, 4.0);
-        assert!(car.forward_speed().abs() < 0.2, "speed {}", car.forward_speed());
+        step(
+            &mut car,
+            Controls {
+                brake: 1.0,
+                ..Default::default()
+            },
+            4.0,
+        );
+        assert!(
+            car.forward_speed().abs() < 0.2,
+            "speed {}",
+            car.forward_speed()
+        );
     }
 
     #[test]
@@ -342,7 +363,11 @@ mod tests {
         car.vel[2] = 10.0;
         step(
             &mut car,
-            Controls { throttle: 0.3, steer: 1.0, ..Default::default() },
+            Controls {
+                throttle: 0.3,
+                steer: 1.0,
+                ..Default::default()
+            },
             1.0,
         );
         assert!(car.yaw > 0.0, "yaw {}", car.yaw);
@@ -356,7 +381,11 @@ mod tests {
         let before = car.yaw_rate;
         step(
             &mut car,
-            Controls { handbrake: true, steer: 1.0, ..Default::default() },
+            Controls {
+                handbrake: true,
+                steer: 1.0,
+                ..Default::default()
+            },
             0.5,
         );
         assert!(car.yaw_rate > before);
@@ -381,7 +410,9 @@ mod tests {
         let mut car = Vehicle::new([0.0; 3], 0.0);
         let mut seed = 0x1234_5678_9abc_def0_u64;
         for i in 0..10_000 {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let r = |shift: u32| ((seed >> shift) & 0xffff) as f64 / 65535.0;
             let c = Controls {
                 throttle: r(0),
@@ -407,7 +438,14 @@ mod tests {
     #[test]
     fn air_drag_bounds_the_top_speed() {
         let mut car = Vehicle::new([0.0; 3], 0.0);
-        step(&mut car, Controls { throttle: 1.0, ..Default::default() }, 90.0);
+        step(
+            &mut car,
+            Controls {
+                throttle: 1.0,
+                ..Default::default()
+            },
+            90.0,
+        );
         assert!(car.forward_speed() < MAX_SPEED + 2.0);
         assert!(car.forward_speed() > 20.0);
     }

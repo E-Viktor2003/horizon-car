@@ -43,27 +43,10 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
     draw.push();
     // The game already posed the pig with its own body yaw; replace it with
     // the physics' yaw.
-    let delta = physics::normalize(
-        f64::from(event.mob.body_yaw).to_radians() - pose.yaw,
-    );
+    let delta = physics::normalize(f64::from(event.mob.body_yaw).to_radians() - pose.yaw);
     draw.rotate_about([0.0, 1.0, 0.0], delta.to_degrees() as f32, [0.0; 3]);
-    draw.rotate_about(
-        [1.0, 0.0, 0.0],
-        pose.pitch.to_degrees() as f32,
-        PIVOT,
-    );
-    draw.rotate_about([0.0, 0.0, 1.0], pose.roll.to_degrees() as f32, PIVOT);
 
-    let lit = snap.braking();
-    for quad in model_data::BODY {
-        let tint = if lit && quad.color == BRAKE_LIGHT {
-            BRAKE_GLOW
-        } else {
-            quad.color
-        };
-        host.draw_quad(draw, model_data::SPRITE, quad.p, model_data::UV, tint);
-    }
-
+    // The wheels stay planted; only the body leans on its suspension.
     let steer = -(pose.steer.to_degrees() as f32);
     wheel(
         host,
@@ -98,6 +81,21 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
         pose.spin_r,
     );
 
+    // The body pitches and rolls about its centre of mass.
+    draw.push();
+    draw.rotate_about([1.0, 0.0, 0.0], pose.pitch.to_degrees() as f32, PIVOT);
+    draw.rotate_about([0.0, 0.0, 1.0], pose.roll.to_degrees() as f32, PIVOT);
+    let lit = snap.braking();
+    for quad in model_data::BODY {
+        let tint = if lit && quad.color == BRAKE_LIGHT {
+            BRAKE_GLOW
+        } else {
+            quad.color
+        };
+        host.draw_quad(draw, model_data::SPRITE, quad.p, model_data::UV, tint);
+    }
+    draw.pop();
+
     draw.pop();
     Flow::Cancel
 }
@@ -110,13 +108,14 @@ fn wheel(
     steer: f32,
     spin: f64,
 ) {
-    // The quads are in model space, so both turns go through the wheel's own
-    // pivot instead of moving it first.
+    // The generated quads are relative to the wheel's own pivot, so put the
+    // pivot under the origin and turn there: that is the axle.
     draw.push();
+    draw.translate(pivot);
     if steer != 0.0 {
-        draw.rotate_about([0.0, 1.0, 0.0], steer, pivot);
+        draw.rotate_about([0.0, 1.0, 0.0], steer, [0.0; 3]);
     }
-    draw.rotate_about([1.0, 0.0, 0.0], spin.to_degrees() as f32, pivot);
+    draw.rotate_about([1.0, 0.0, 0.0], spin.to_degrees() as f32, [0.0; 3]);
     for quad in quads {
         host.draw_quad(draw, model_data::SPRITE, quad.p, model_data::UV, quad.color);
     }

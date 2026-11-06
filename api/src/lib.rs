@@ -5,8 +5,10 @@
 //!
 //! - `level_tick_pre` runs the physics on the server, 20 times a second.
 //! - `perform_command` hears `/car` on the server, with the acting player.
-//! - `key` and `player_input` collect the driver's pedals and steering.
+//! - `movement_input` reads the window's pedals; `player_input` a LAN guest's.
+//! - `entity_mount` knows who got into which car.
 //! - `mob_submit` draws the model over the pig that carries the car.
+//! - `render_name_tag` hides the chassis' name tag.
 //! - `hud` and `camera_pose` put the driver inside it.
 //! - `net_from_server` carries a LAN host's poses to its guests.
 //! - `entity_join_level` picks a car up again after a save.
@@ -25,9 +27,10 @@ mod spawn;
 mod state;
 
 use horizon_client::mod_api::{
-    ClientDisconnectingEvent, EntityJoinLevelEvent, EntityLeaveLevelEvent, Flow, Hooks, Host,
-    HudEvent, KeyEvent, LevelTickPreEvent, MobSubmitEvent, NetFromServerEvent, PerformCommandEvent,
-    PlayerInputEvent, RegisterCommandsEvent, TickEvent,
+    ClientDisconnectingEvent, EntityJoinLevelEvent, EntityLeaveLevelEvent, EntityMountEvent, Flow,
+    Hooks, Host, HudEvent, LevelTickPreEvent, MobSubmitEvent, MovementInputEvent,
+    NetFromServerEvent, PerformCommandEvent, PlayerInputEvent, RegisterCommandsEvent,
+    RenderNameTagEvent, TickEvent,
 };
 
 pub fn hooks() -> Box<dyn Hooks> {
@@ -54,10 +57,19 @@ impl Hooks for Car {
         commands::perform(host, event)
     }
 
-    /// Physical keys of the local player: W, S, A, D and space.
-    fn key(&self, _host: &mut dyn Host, event: &mut KeyEvent<'_>) {
-        if let Some(bit) = state::key_bit(event.key) {
-            state::set_key(bit, event.pressed);
+    /// The window player's pedals, whatever keys they are bound to. While
+    /// they sit in a car, this is what that car drives on.
+    fn movement_input(&self, host: &dyn Host, event: &mut MovementInputEvent) {
+        let Some(player) = host.player() else {
+            state::clear_local_drive();
+            return;
+        };
+        match state::seated_in([player.x, player.y, player.z]) {
+            Some(snap) => state::set_local_drive(
+                snap.id,
+                state::controls_from_input(event.forward, event.strafe, event.jump),
+            ),
+            None => state::clear_local_drive(),
         }
     }
 
@@ -66,12 +78,16 @@ impl Hooks for Car {
         state::set_guest_input(event.player, event.flags);
     }
 
+    /// Who got into (or out of) which car. The seat itself stays vanilla.
+    fn entity_mount(&self, _host: &mut dyn Host, event: &mut EntityMountEvent<'_>) -> Flow {
+        if state::has_car(event.vehicle) {
+            state::set_rider(event.vehicle, event.mounting.then_some(event.entity));
+        }
+        Flow::Continue
+    }
+
     /// A pig entering a level may be a car coming back from the save.
-    fn entity_join_level(
-        &self,
-        host: &mut dyn Host,
-        event: &mut EntityJoinLevelEvent<'_>,
-    ) -> Flow {
+    fn entity_join_level(&self, host: &mut dyn Host, event: &mut EntityJoinLevelEvent<'_>) -> Flow {
         if event.kind != "minecraft:pig" || host.window() || state::has_car(event.entity) {
             return Flow::Continue;
         }
@@ -87,19 +103,10 @@ impl Hooks for Car {
         }
     }
 
-    /// The client tick drives the engine sound and keeps a stale key from
-    /// sticking after the player gets out.
+    /// The client tick plays the engine sound.
     fn tick(&self, host: &mut dyn Host, _event: &mut TickEvent) {
-        if !host.window() {
-            return;
-        }
-        sound::tick(host);
-        let Some(player) = host.player() else {
-            state::clear_keys();
-            return;
-        };
-        if state::seated_in([player.x, player.y, player.z]).is_none() {
-            state::clear_keys();
+        if host.window() {
+            sound::tick(host);
         }
     }
 
@@ -108,13 +115,24 @@ impl Hooks for Car {
         render::submit(host, event)
     }
 
+    /// The chassis is a mechanism, not a pet: no name above it.
+    fn render_name_tag(&self, _host: &dyn Host, event: &mut RenderNameTagEvent<'_>) {
+        if state::snapshot(event.entity_id).is_some() {
+            event.visible = false;
+        }
+    }
+
     /// The driver's speedometer.
     fn hud(&self, host: &mut dyn Host, event: &mut HudEvent<'_>) {
         hud::draw(host, event);
     }
 
     /// The driver's eyes, inside the cockpit.
-    fn camera_pose(&self, host: &dyn Host, event: &mut horizon_client::mod_api::CameraPoseEvent<'_>) {
+    fn camera_pose(
+        &self,
+        host: &dyn Host,
+        event: &mut horizon_client::mod_api::CameraPoseEvent<'_>,
+    ) {
         camera::pose(host, event);
     }
 

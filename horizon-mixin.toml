@@ -2,7 +2,7 @@
 # `horizon-launcher native-build <this folder> --instance <instance> --trust-native-code`.
 [mod]
 id = "horizon_car"
-version = "0.1.1"
+version = "0.1.2"
 
 [compatibility]
 horizon_revision = "28a389b7a37373598391d8e18d87846bc4218e41"

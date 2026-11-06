@@ -3,8 +3,8 @@
 
 use horizon_client::mod_api::Host;
 
-use super::tuning::{self, TRACK};
 use super::Frame;
+use super::tuning::{self, TRACK};
 
 /// How far below the car the ground is still looked for, in blocks.
 const DROP: i32 = 4;
@@ -51,7 +51,11 @@ pub fn sample(host: &dyn Host, pos: [f64; 3], yaw: f64) -> Frame {
             count += 1;
         }
     }
-    let target_y = if count > 0 { sum / f64::from(count) } else { pos[1] };
+    let target_y = if count > 0 {
+        sum / f64::from(count)
+    } else {
+        pos[1]
+    };
     Frame {
         heights,
         friction,
@@ -90,11 +94,8 @@ fn ground_at(host: &dyn Host, x: f64, z: f64, from_y: f64) -> Option<(f64, Strin
         let mut top: Option<f64> = None;
         for b in host.block_collision([bx, by, bz]) {
             let [x0, y0, z0, x1, y1, z1] = b;
-            let inside = lx > x0 - 1e-7
-                && lx < x1 + 1e-7
-                && lz > z0 - 1e-7
-                && lz < z1 + 1e-7
-                && y1 > y0;
+            let inside =
+                lx > x0 - 1e-7 && lx < x1 + 1e-7 && lz > z0 - 1e-7 && lz < z1 + 1e-7 && y1 > y0;
             if !inside {
                 continue;
             }

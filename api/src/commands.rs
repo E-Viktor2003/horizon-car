@@ -7,8 +7,7 @@
 //! changes the world is queued and run in the next level tick.
 
 use horizon_client::mod_api::{
-    Flow, Host, NativeCommand, NativeServerPlayer, PerformCommandEvent, RegisterCommandsEvent,
-    Text,
+    Flow, Host, NativeCommand, NativeServerPlayer, PerformCommandEvent, RegisterCommandsEvent, Text,
 };
 
 use crate::state::{self, Action, MAX_CARS};
@@ -18,6 +17,7 @@ pub fn register(event: &mut RegisterCommandsEvent<'_>) {
     event.commands.push(NativeCommand::new("car"));
     event.commands.push(NativeCommand::new("car remove"));
     event.commands.push(NativeCommand::new("car help"));
+    event.commands.push(NativeCommand::new("car debug"));
 }
 
 pub fn perform(host: &mut dyn Host, event: &mut PerformCommandEvent<'_>) -> Flow {
@@ -35,6 +35,7 @@ pub fn perform(host: &mut dyn Host, event: &mut PerformCommandEvent<'_>) -> Flow
         "" => place(player, &mut lines),
         "remove" => remove(player, &mut lines),
         "help" => help(&mut lines),
+        "debug" => debug(host, player, &mut lines),
         other => lines.push(format!(
             "Неизвестный аргумент «{other}». /car, /car remove, /car help"
         )),
@@ -81,8 +82,40 @@ fn help(lines: &mut Vec<String>) {
         "/car — поставить машину перед собой",
         "/car remove — убрать ближайшую машину",
         "/car help — эта справка",
+        "/car debug — что сервер видит про ближайшую машину",
         "W газ, S тормоз/задний ход, A/D руль, Space ручник, Shift — выйти",
     ] {
         lines.push(line.to_owned());
+    }
+}
+
+/// What the server, the window and the guest input have for the nearest car.
+fn debug(host: &mut dyn Host, player: &NativeServerPlayer, lines: &mut Vec<String>) {
+    let players = host.server_players();
+    lines.push(format!(
+        "server_players={} window={} player={}",
+        players.len(),
+        host.window(),
+        host.player().is_some()
+    ));
+    for p in &players {
+        lines.push(format!(
+            "  {} {} pos={:?} entity_id={}",
+            p.name, p.dimension, p.position, p.entity_id
+        ));
+    }
+    match state::nearest_car(player.position, &player.dimension, 8.0) {
+        Some((id, pos)) => {
+            lines.push(format!("nearest car {id} at {pos:?}"));
+            lines.push(state::debug(id, player.uuid));
+            let dx = player.position[0] - pos[0];
+            let dy = player.position[1] - pos[1];
+            let dz = player.position[2] - pos[2];
+            lines.push(format!(
+                "seat from player: dx={dx:.2} dy={dy:.2} dz={dz:.2}, seat height {:.2}",
+                state::SEAT_HEIGHT
+            ));
+        }
+        None => lines.push("no car within 8 blocks".to_owned()),
     }
 }

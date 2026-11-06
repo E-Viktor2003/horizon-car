@@ -62,7 +62,11 @@ pub fn draw(host: &mut dyn Host, event: &mut HudEvent<'_>) {
         host.fill(
             event.batch,
             [x + PADDING, y + HEIGHT - 4.0, filled, 2.0],
-            if snap.rpm / redline > 0.85 { ACCENT } else { 0xAA55FF88 },
+            if snap.rpm / redline > 0.85 {
+                ACCENT
+            } else {
+                0xAA55FF88
+            },
         );
     }
 
