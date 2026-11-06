@@ -1,0 +1,16 @@
+Horizon Car
+===========
+
+The car model, `low_poly_small_car.glb`, is by **scailman** and is licensed
+under the Creative Commons Attribution 4.0 International License
+(CC-BY-4.0):
+
+    https://creativecommons.org/licenses/by/4.0/
+
+Changes made for this project: the model is transformed at build time into
+flat-shaded quads for Minecraft rendering (scaled, split into a body and four
+wheels, coplanar triangles merged, interior and hidden detail removed). The
+original `.glb` file is kept unmodified in this repository.
+
+All Rust source code in this repository is licensed under the MIT License; see
+`LICENSE`.

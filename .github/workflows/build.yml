@@ -1,0 +1,169 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  MOD_ID: horizon_car
+  VERSION: 0.1.0
+  HORIZON_REVISION: 28a389b7a37373598391d8e18d87846bc4218e41
+  HORIZON_MIXINS_REVISION: e8cd0aa38cffef49cb2e088ef716baa107148c02
+
+jobs:
+  compile:
+    name: Compile and test against pinned Horizon
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.99.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+
+      - name: Install Linux build headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libasound2-dev libudev-dev
+
+      - name: Check out Horizon at the pinned revision
+        uses: actions/checkout@v4
+        with:
+          repository: horizon-rust/horizon
+          ref: ${{ env.HORIZON_REVISION }}
+          path: horizon
+          fetch-depth: 1
+
+      - name: Point horizon-client at the checkout
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<EOF
+          [patch."https://github.com/horizon-rust/horizon"]
+          horizon-client = { path = "$GITHUB_WORKSPACE/horizon/crates/horizon-client" }
+          EOF
+
+      # The launcher and the registry both compile this crate against the
+      # game; a warning-free check here is what that build starts from.
+      - name: Check the mod
+        run: cargo check --manifest-path api/Cargo.toml --locked
+
+      - name: Run the mod's tests
+        run: cargo test --manifest-path api/Cargo.toml --locked
+
+  model:
+    name: Check the committed model
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: python3 -m pip install --disable-pip-version-check numpy
+
+      # model_data.rs is generated from the GLB and committed so the crate
+      # needs no asset pipeline. Rebuild it and fail when the two drift.
+      - name: Regenerate model_data.rs
+        run: python3 tools/glb2car.py low_poly_small_car.glb -o api/src/render/model_data.rs
+
+      - name: Fail on a stale model
+        run: |
+          if ! git diff --exit-code -- api/src/render/model_data.rs; then
+            echo "::error::api/src/render/model_data.rs is stale; run tools/glb2car.py"
+            exit 1
+          fi
+
+  package:
+    name: Package .hnmod
+    needs: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check that every pin agrees
+        run: |
+          python3 - <<'PY'
+          import json, os, tomllib
+          mixin = tomllib.load(open("horizon-mixin.toml", "rb"))
+          compat = json.load(open("compatibility.json"))
+          api = open("api/Cargo.toml").read()
+          assert mixin["mod"]["id"] == os.environ["MOD_ID"], mixin["mod"]["id"]
+          assert mixin["mod"]["version"] == os.environ["VERSION"], mixin["mod"]["version"]
+          assert mixin["compatibility"]["horizon_revision"] == compat["horizon_revision"]
+          assert compat["horizon_revision"] == os.environ["HORIZON_REVISION"]
+          assert compat["horizon_mixins_revision"] == os.environ["HORIZON_MIXINS_REVISION"]
+          assert compat["horizon_revision"] in api
+          print("pins agree:", compat["horizon_revision"])
+          print("hook points:", compat["hooks"])
+          PY
+
+      - name: Pack and check the native bundle
+        run: |
+          python3 tools/package_native.py . -o "dist/$MOD_ID-$VERSION.hnmod"
+          python3 tools/package_native.py --check "dist/$MOD_ID-$VERSION.hnmod"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-car-hnmod
+          path: dist/*.hnmod
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish the GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [compile, model, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pack the release bundle
+        run: |
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match v$VERSION"
+            exit 1
+          fi
+          python3 tools/package_native.py . -o "dist/$MOD_ID-$VERSION.hnmod"
+          python3 tools/package_native.py --check "dist/$MOD_ID-$VERSION.hnmod"
+          (cd dist && sha256sum "$MOD_ID-$VERSION.hnmod" > SHA256SUMS)
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/$MOD_ID-$VERSION.hnmod" dist/SHA256SUMS \
+            --title "Horizon Car $VERSION" \
+            --notes-file - <<'NOTES'
+          Машина для Horizon (Minecraft 26.3) с серверной физикой.
+
+          Установите `.hnmod` в `<instance>/horizon-native-mods/` и пересоберите
+          инстанс в лаунчере (`Mods` → Build, с `--trust-native-code`).
+
+          Управление: W газ, S тормоз/задний ход, A/D руль, Space ручник,
+          Shift — выйти. Правый клик по машине — сесть. `/car` ставит машину,
+          `/car remove` убирает ближайшую, `/car help` — справка.
+          NOTES

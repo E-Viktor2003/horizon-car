@@ -1,0 +1,129 @@
+//! Horizon Car: a drivable car with server-side physics.
+//!
+//! This is a Horizon trait mod (`docs/native-mods.md`). It uses only catalog
+//! hook points:
+//!
+//! - `level_tick_pre` runs the physics on the server, 20 times a second.
+//! - `player_command` hears `/car` on the server, for the host and guests.
+//! - `key` and `player_input` collect the driver's pedals and steering.
+//! - `mob_submit` draws the model over the pig that carries the car.
+//! - `hud` and `camera_pose` put the driver inside it.
+//! - `net_from_server` carries a LAN host's poses to its guests.
+//! - `entity_join_level` picks a car up again after a save.
+//!
+//! The physics lives in [`physics`] and is plain arithmetic, so `cargo test`
+//! runs it without the game.
+
+mod camera;
+mod commands;
+mod hud;
+mod net;
+mod physics;
+mod render;
+mod sound;
+mod spawn;
+mod state;
+
+use horizon_client::mod_api::{
+    ClientDisconnectingEvent, EntityJoinLevelEvent, EntityLeaveLevelEvent, Flow, Hooks, Host,
+    HudEvent, KeyEvent, LevelTickPreEvent, MobSubmitEvent, NetFromServerEvent, PlayerCommandEvent,
+    PlayerInputEvent, RegisterCommandsEvent, TickEvent,
+};
+
+pub fn hooks() -> Box<dyn Hooks> {
+    Box::new(Car)
+}
+
+struct Car;
+
+impl Hooks for Car {
+    /// One server level tick: physics, spawning and removing cars, state
+    /// tags, and the state a LAN host sends its guests.
+    fn level_tick_pre(&self, host: &mut dyn Host, event: &mut LevelTickPreEvent<'_>) {
+        state::tick(host, event.dimension);
+    }
+
+    /// The `/car` names the clients' command trees learn.
+    fn register_commands(&self, _host: &mut dyn Host, event: &mut RegisterCommandsEvent<'_>) {
+        commands::register(event);
+    }
+
+    /// `/car` typed by any player, on the server.
+    fn player_command(&self, host: &mut dyn Host, event: &mut PlayerCommandEvent<'_>) -> Flow {
+        commands::run(host, event)
+    }
+
+    /// Physical keys of the local player: W, S, A, D and space.
+    fn key(&self, _host: &mut dyn Host, event: &mut KeyEvent<'_>) {
+        if let Some(bit) = state::key_bit(event.key) {
+            state::set_key(bit, event.pressed);
+        }
+    }
+
+    /// A LAN guest's movement flags, which arrive on the host's server.
+    fn player_input(&self, _host: &mut dyn Host, event: &mut PlayerInputEvent<'_>) {
+        state::set_guest_input(event.player, event.flags);
+    }
+
+    /// A pig entering a level may be a car coming back from the save.
+    fn entity_join_level(
+        &self,
+        host: &mut dyn Host,
+        event: &mut EntityJoinLevelEvent<'_>,
+    ) -> Flow {
+        if event.kind != "minecraft:pig" || host.window() || state::has_car(event.entity) {
+            return Flow::Continue;
+        }
+        // The entity is not always reachable from inside this hook.
+        state::note_join(event.entity, event.dimension);
+        Flow::Continue
+    }
+
+    /// A car's chunk unloaded or the pig was removed.
+    fn entity_leave_level(&self, host: &mut dyn Host, event: &mut EntityLeaveLevelEvent<'_>) {
+        if !host.window() && state::has_car(event.entity) {
+            state::remove(event.entity);
+        }
+    }
+
+    /// The client tick drives the engine sound and keeps a stale key from
+    /// sticking after the player gets out.
+    fn tick(&self, host: &mut dyn Host, _event: &mut TickEvent) {
+        if !host.window() {
+            return;
+        }
+        sound::tick(host);
+        let Some(player) = host.player() else {
+            state::clear_keys();
+            return;
+        };
+        if state::seated_in([player.x, player.y, player.z]).is_none() {
+            state::clear_keys();
+        }
+    }
+
+    /// Replace the pig's model with the car.
+    fn mob_submit(&self, host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
+        render::submit(host, event)
+    }
+
+    /// The driver's speedometer.
+    fn hud(&self, host: &mut dyn Host, event: &mut HudEvent<'_>) {
+        hud::draw(host, event);
+    }
+
+    /// The driver's eyes, inside the cockpit.
+    fn camera_pose(&self, host: &dyn Host, event: &mut horizon_client::mod_api::CameraPoseEvent<'_>) {
+        camera::pose(host, event);
+    }
+
+    /// Car poses from a LAN host.
+    fn net_from_server(&self, _host: &mut dyn Host, event: &mut NetFromServerEvent<'_>) {
+        net::receive(event);
+    }
+
+    /// Leaving a world: the client's poses and the server's cars are gone.
+    fn client_disconnecting(&self, _host: &dyn Host, _event: &mut ClientDisconnectingEvent) {
+        state::clear();
+    }
+}

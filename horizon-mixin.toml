@@ -1,0 +1,11 @@
+# Horizon Car: a native trait mod (docs/native-mods.md, "Trait mods"). Build it with
+# `horizon-launcher native-build <this folder> --instance <instance> --trust-native-code`.
+[mod]
+id = "horizon_car"
+version = "0.1.0"
+
+[compatibility]
+horizon_revision = "28a389b7a37373598391d8e18d87846bc4218e41"
+
+[api]
+path = "api"
