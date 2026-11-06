@@ -131,3 +131,69 @@ pub fn restore(host: &mut dyn Host, id: u32, dimension: &str) -> bool {
     state::publish(id);
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tag<'a>(nbt: &'a Compound, key: &str) -> Option<&'a Tag> {
+        nbt.iter()
+            .find(|(name, _)| name.to_string_lossy() == key)
+            .map(|(_, value)| value)
+    }
+
+    fn strings(tag: &Tag) -> Vec<String> {
+        match tag {
+            Tag::List(list) => list
+                .iter()
+                .filter_map(|t| match t {
+                    Tag::String(s) => Some(s.to_string_lossy()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_chassis_is_an_invisible_ridden_pig() {
+        let nbt = car_nbt(1.5);
+        assert!(
+            matches!(tag(&nbt, "CustomName"), Some(Tag::String(s)) if s.to_string_lossy() == CAR_NAME)
+        );
+        assert!(matches!(tag(&nbt, "CustomNameVisible"), Some(Tag::Byte(0))));
+        // `travel` only runs with AI; the speed attribute keeps it still.
+        assert!(matches!(tag(&nbt, "NoAI"), Some(Tag::Byte(0))));
+        assert!(matches!(tag(&nbt, "NoGravity"), Some(Tag::Byte(1))));
+        assert!(matches!(tag(&nbt, "Silent"), Some(Tag::Byte(1))));
+        assert!(matches!(tag(&nbt, "Invulnerable"), Some(Tag::Byte(1))));
+        assert!(matches!(tag(&nbt, "PersistenceRequired"), Some(Tag::Byte(1))));
+        assert!(matches!(tag(&nbt, "Saddle"), Some(Tag::Byte(1))));
+    }
+
+    #[test]
+    fn the_chassis_has_no_vanilla_movement_speed() {
+        let nbt = car_nbt(0.0);
+        let Some(Tag::List(attributes)) = tag(&nbt, "attributes") else {
+            panic!("no attributes");
+        };
+        let Some(Tag::Compound(first)) = attributes.first() else {
+            panic!("no attribute entry");
+        };
+        assert!(
+            matches!(tag(first, "id"), Some(Tag::String(s)) if s.to_string_lossy() == "minecraft:movement_speed")
+        );
+        assert!(matches!(tag(first, "base"), Some(Tag::Double(bits)) if *bits == 0.0f64.to_bits()));
+    }
+
+    #[test]
+    fn the_chassis_carries_its_name_and_state_tags() {
+        let nbt = car_nbt(0.25);
+        let Some(tags) = tag(&nbt, "Tags") else {
+            panic!("no tags");
+        };
+        let tags = strings(tags);
+        assert!(tags.iter().any(|t| t == CAR_TAG), "{tags:?}");
+        assert!(tags.iter().any(|t| t.starts_with("hc_s")), "{tags:?}");
+    }
+}
