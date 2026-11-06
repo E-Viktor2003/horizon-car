@@ -149,6 +149,21 @@ impl Hooks for Car {
         camera::pose(host, event);
     }
 
+    /// Third person: pull back far enough to see a four-block car, not just
+    /// the back of the driver's head.
+    fn camera_distance(
+        &self,
+        host: &dyn Host,
+        event: &mut horizon_client::mod_api::CameraDistanceEvent<'_>,
+    ) {
+        if host
+            .player()
+            .is_some_and(|p| state::seated_in([p.x, p.y, p.z]).is_some())
+        {
+            event.distance = event.distance.max(camera::THIRD_PERSON_DISTANCE);
+        }
+    }
+
     /// Car poses from a LAN host.
     fn net_from_server(&self, _host: &mut dyn Host, event: &mut NetFromServerEvent<'_>) {
         net::receive(event);

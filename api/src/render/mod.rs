@@ -47,7 +47,11 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
     let delta = physics::normalize(f64::from(event.mob.body_yaw).to_radians() - pose.yaw);
     draw.rotate_about([0.0, 1.0, 0.0], delta.to_degrees() as f32, [0.0; 3]);
 
-    // The wheels stay planted; only the body leans on its suspension.
+    // The whole car leans on its suspension, wheels included: a wheel left
+    // flat while the body rolls slides out of its arch and looks detached.
+    draw.rotate_about([1.0, 0.0, 0.0], pose.pitch.to_degrees() as f32, PIVOT);
+    draw.rotate_about([0.0, 0.0, 1.0], pose.roll.to_degrees() as f32, PIVOT);
+
     let steer = -(pose.steer.to_degrees() as f32);
     wheel(
         host,
@@ -82,10 +86,7 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
         pose.spin_r,
     );
 
-    // The body pitches and rolls about its centre of mass.
-    draw.push();
-    draw.rotate_about([1.0, 0.0, 0.0], pose.pitch.to_degrees() as f32, PIVOT);
-    draw.rotate_about([0.0, 0.0, 1.0], pose.roll.to_degrees() as f32, PIVOT);
+    // The body alone does not lean again: the whole frame above already did.
     let lit = snap.braking();
     for quad in model_data::BODY {
         let tint = if lit && quad.color == BRAKE_LIGHT {
@@ -95,7 +96,6 @@ pub fn submit(host: &dyn Host, event: &mut MobSubmitEvent<'_>) -> Flow {
         };
         host.draw_quad(draw, model_data::SPRITE, quad.p, model_data::UV, tint);
     }
-    draw.pop();
 
     draw.pop();
     Flow::Cancel

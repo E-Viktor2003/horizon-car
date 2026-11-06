@@ -16,6 +16,9 @@ const AHEAD: f64 = 0.15;
 const PLAYER_EYE: f64 = 1.62;
 /// How far the camera has to be from the eye to count as detached.
 const DETACHED: f64 = 0.75;
+/// How far the third-person camera sits behind the driver in a car: enough to
+/// see the whole four-block body.
+pub const THIRD_PERSON_DISTANCE: f32 = 5.5;
 
 pub fn pose(host: &dyn Host, event: &mut CameraPoseEvent<'_>) {
     let Some(player) = host.player() else {

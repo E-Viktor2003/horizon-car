@@ -65,7 +65,7 @@ impl Pose {
                 mix(self.pos[1], next.pos[1]),
                 mix(self.pos[2], next.pos[2]),
             ],
-            yaw: physics::normalize(mix(self.yaw, next.yaw)),
+            yaw: physics::normalize(self.yaw + physics::normalize(next.yaw - self.yaw) * t),
             pitch: mix(self.pitch, next.pitch),
             roll: mix(self.roll, next.roll),
             spin_f: physics::normalize(spin(self.spin_f, next.spin_f)),
@@ -376,15 +376,19 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
     // clamp keeps a teleport-sized jump from throwing the rider.
     let target = car.vehicle.pos;
     if let Some(actual) = host.entity_position(entity) {
-        let grounded = frame.heights.iter().any(|h| h.is_finite());
-        let target_y = if grounded {
-            frame.target_y + 0.01
+        // The body's own height is already filtered towards the ground in
+        // `step`; servo to that, not to the raw sample, or every snow layer
+        // and step would yank the chassis up and down once a tick. Never aim
+        // below the ground just sampled, though: a pig pushed into a block
+        // gets shoved back out and the car shakes.
+        let target_y = if frame.heights.iter().any(|h| h.is_finite()) {
+            (frame.target_y + 0.01).max(car.vehicle.pos[1])
         } else {
             car.vehicle.pos[1]
         };
         let vx = (target[0] - actual[0]).clamp(-2.5, 2.5);
         let vz = (target[2] - actual[2]).clamp(-2.5, 2.5);
-        let vy = (target_y - actual[1]).clamp(-0.6, 0.6);
+        let vy = (target_y - actual[1]).clamp(-0.3, 0.3);
         host.entity_set_velocity(entity, [vx, vy, vz]);
     }
 
@@ -665,5 +669,37 @@ mod tests {
         merge(&mut c, controls_from_flags(1 | 8));
         assert_eq!(c.throttle, 1.0);
         assert_eq!(c.steer, 1.0);
+    }
+
+    fn pose_at(yaw: f64) -> Pose {
+        Pose {
+            pos: [0.0; 3],
+            yaw,
+            pitch: 0.0,
+            roll: 0.0,
+            spin_f: 0.0,
+            spin_r: 0.0,
+            steer: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_pose_crossing_the_wrap_turns_the_short_way() {
+        // Heading just short of south-west to just past it: the model must
+        // turn a couple of degrees, not most of the way round.
+        let from = pose_at(std::f64::consts::PI - 0.02);
+        let to = pose_at(-std::f64::consts::PI + 0.02);
+        let middle = from.lerp(&to, 0.5);
+        let turned = physics::normalize(middle.yaw - from.yaw);
+        assert!(turned.abs() < 0.05, "turned {turned} rad");
+    }
+
+    #[test]
+    fn a_pose_between_ticks_is_smooth() {
+        let from = pose_at(0.4);
+        let to = pose_at(0.6);
+        assert!((from.lerp(&to, 0.0).yaw - 0.4).abs() < 1e-9);
+        assert!((from.lerp(&to, 1.0).yaw - 0.6).abs() < 1e-9);
+        assert!((from.lerp(&to, 0.5).yaw - 0.5).abs() < 1e-9);
     }
 }

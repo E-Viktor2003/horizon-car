@@ -267,9 +267,16 @@ impl Vehicle {
 
         let target_pitch = self.ground_pitch - a_long * 0.006;
         let target_roll = self.ground_roll - a_lat * 0.006;
-        let k = (dt * 10.0).min(1.0);
-        self.pitch += (target_pitch - self.pitch) * k;
-        self.roll += (target_roll - self.roll) * k;
+        // A step caught by one wheel is not a slope: cap the angle the ground
+        // can claim, and let the body settle towards it at a suspension's pace
+        // instead of snapping to every block edge it samples.
+        const MAX_TILT: f64 = 0.42;
+        let target_pitch = target_pitch.clamp(-MAX_TILT, MAX_TILT);
+        let target_roll = target_roll.clamp(-MAX_TILT, MAX_TILT);
+        let k = (dt * 8.0).min(1.0);
+        let max_step = 3.0 * dt;
+        self.pitch += ((target_pitch - self.pitch) * k).clamp(-max_step, max_step);
+        self.roll += ((target_roll - self.roll) * k).clamp(-max_step, max_step);
 
         // Wheels roll with the car; the handbrake locks the rear axle.
         self.spin_f = (self.spin_f + v_long / WHEEL_RADIUS * dt).rem_euclid(std::f64::consts::TAU);

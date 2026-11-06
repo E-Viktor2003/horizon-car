@@ -31,7 +31,11 @@
 - HUD: скорость (км/ч), передача, обороты, ручник.
 - Камера водителя через `camera_pose`: в первом лице — в салоне, на высоте
   лобового стекла; в третьем (F5) — ванильная камера за машиной, модель
-  водителя скрыта, чтобы голова не торчала над крышей.
+  водителя скрыта, чтобы голова не торчала над крышей, а `camera_distance`
+  отодвигает её на 5,5 блока, чтобы машина целиком влезала в кадр.
+- Кузов и колёса наклоняются вместе (крен/тангаж), поэтому колёса остаются в
+  арках на склонах и ступеньках; углы ограничены и сглажены, чтобы машина не
+  дёргалась на неровностях. Высота сглаживается отдельно от сэмпла земли.
 - Мультиплеер: на LAN-хосте состояние машин рассылается гостям по каналу
   `horizon_car:state` (`net_send_to_player`); в одиночной игре клиент и
   интегрированный сервер делят состояние мода.
@@ -169,13 +173,13 @@ cargo check --manifest-path api/Cargo.toml
 cargo test  --manifest-path api/Cargo.toml
 
 python3 tools/glb2car.py low_poly_small_car.glb -o api/src/render/model_data.rs
-python3 tools/package_native.py . -o dist/horizon_car-0.1.3.hnmod
-python3 tools/package_native.py --check dist/horizon_car-0.1.3.hnmod
+python3 tools/package_native.py . -o dist/horizon_car-0.1.4.hnmod
+python3 tools/package_native.py --check dist/horizon_car-0.1.4.hnmod
 ```
 
 ## Установка
 
-1. Скачайте `horizon_car-0.1.3.hnmod` из
+1. Скачайте `horizon_car-0.1.4.hnmod` из
    [Release](https://github.com/E-Viktor2003/horizon-car/releases) или
    артефакта Actions.
 2. Положите файл в `<instance>/horizon-native-mods/` (Mods page → **Open
