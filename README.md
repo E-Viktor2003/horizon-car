@@ -43,8 +43,9 @@
 | правый клик по машине | сесть |
 
 Команды регистрируются на сервере (`register_commands`) и обрабатываются в
-`player_command`, поэтому работают и у хоста, и у гостей LAN; ничего
-перехватывать на клиенте не нужно:
+`perform_command`, поэтому работают и у хоста, и у гостей LAN; ничего
+перехватывать на клиенте не нужно. `perform_command` даёт позицию игрока и
+работает уже после того, как сервер подставил его состояние:
 
 | Команда | Действие |
 | --- | --- |
@@ -60,7 +61,7 @@
 
 ```text
 СЕРВЕР (20 Гц)
-  player_command /car ─┐
+  perform_command /car ─┐
   player_input ────────┤ очереди
   key ─────────────────┘ (локальный игрок)
   level_tick_pre:
@@ -107,7 +108,7 @@ Car/
     src/
       lib.rs               impl Hooks, маршрутизация
       state.rs             машины, ввод, очереди, теги, снапшоты
-      commands.rs          /car (register_commands + player_command)
+      commands.rs          /car (register_commands + perform_command)
       spawn.rs             NBT, точка спавна, восстановление
       net.rs               протокол horizon_car:state для LAN
       hud.rs               спидометр/передача/обороты
@@ -158,13 +159,13 @@ cargo check --manifest-path api/Cargo.toml
 cargo test  --manifest-path api/Cargo.toml
 
 python3 tools/glb2car.py low_poly_small_car.glb -o api/src/render/model_data.rs
-python3 tools/package_native.py . -o dist/horizon_car-0.1.0.hnmod
-python3 tools/package_native.py --check dist/horizon_car-0.1.0.hnmod
+python3 tools/package_native.py . -o dist/horizon_car-0.1.1.hnmod
+python3 tools/package_native.py --check dist/horizon_car-0.1.1.hnmod
 ```
 
 ## Установка
 
-1. Скачайте `horizon_car-0.1.0.hnmod` из
+1. Скачайте `horizon_car-0.1.1.hnmod` из
    [Release](https://github.com/E-Viktor2003/horizon-car/releases) или
    артефакта Actions.
 2. Положите файл в `<instance>/horizon-native-mods/` (Mods page → **Open

@@ -4,7 +4,7 @@
 //! hook points:
 //!
 //! - `level_tick_pre` runs the physics on the server, 20 times a second.
-//! - `player_command` hears `/car` on the server, for the host and guests.
+//! - `perform_command` hears `/car` on the server, with the acting player.
 //! - `key` and `player_input` collect the driver's pedals and steering.
 //! - `mob_submit` draws the model over the pig that carries the car.
 //! - `hud` and `camera_pose` put the driver inside it.
@@ -26,7 +26,7 @@ mod state;
 
 use horizon_client::mod_api::{
     ClientDisconnectingEvent, EntityJoinLevelEvent, EntityLeaveLevelEvent, Flow, Hooks, Host,
-    HudEvent, KeyEvent, LevelTickPreEvent, MobSubmitEvent, NetFromServerEvent, PlayerCommandEvent,
+    HudEvent, KeyEvent, LevelTickPreEvent, MobSubmitEvent, NetFromServerEvent, PerformCommandEvent,
     PlayerInputEvent, RegisterCommandsEvent, TickEvent,
 };
 
@@ -48,9 +48,10 @@ impl Hooks for Car {
         commands::register(event);
     }
 
-    /// `/car` typed by any player, on the server.
-    fn player_command(&self, host: &mut dyn Host, event: &mut PlayerCommandEvent<'_>) -> Flow {
-        commands::run(host, event)
+    /// `/car` typed by any player, on the server. `perform_command` gives the
+    /// acting player's position; `player_command` runs before the swap.
+    fn perform_command(&self, host: &mut dyn Host, event: &mut PerformCommandEvent<'_>) -> Flow {
+        commands::perform(host, event)
     }
 
     /// Physical keys of the local player: W, S, A, D and space.

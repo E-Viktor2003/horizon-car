@@ -1,23 +1,26 @@
 //! `/car`: put a car in front of the player, remove one, or ask for help.
 //!
-//! The command is registered on the server and heard in `player_command`, so
-//! it works for the host and for LAN guests alike. Anything that changes the
-//! world is queued and run in the next level tick.
+//! The command is registered on the server and heard in `perform_command`, so
+//! it works for the host and for LAN guests alike. `perform_command` hands
+//! over the acting player with their position, which `player_command` cannot
+//! do here: it runs before the server has swapped the player in. Anything that
+//! changes the world is queued and run in the next level tick.
 
 use horizon_client::mod_api::{
-    Flow, Host, NativeCommand, PlayerCommandEvent, RegisterCommandsEvent, Text,
+    Flow, Host, NativeCommand, NativeServerPlayer, PerformCommandEvent, RegisterCommandsEvent,
+    Text,
 };
 
 use crate::state::{self, Action, MAX_CARS};
 
-/// The names the client's command tree learns.
+/// The names the clients' command trees learn.
 pub fn register(event: &mut RegisterCommandsEvent<'_>) {
     event.commands.push(NativeCommand::new("car"));
     event.commands.push(NativeCommand::new("car remove"));
     event.commands.push(NativeCommand::new("car help"));
 }
 
-pub fn run(host: &mut dyn Host, event: &mut PlayerCommandEvent<'_>) -> Flow {
+pub fn perform(host: &mut dyn Host, event: &mut PerformCommandEvent<'_>) -> Flow {
     let line = event.command.trim();
     let (head, rest) = match line.split_once(char::is_whitespace) {
         Some((head, rest)) => (head, rest.trim()),
@@ -26,51 +29,25 @@ pub fn run(host: &mut dyn Host, event: &mut PlayerCommandEvent<'_>) -> Flow {
     if head != "car" {
         return Flow::Continue;
     }
-    let Some(player) = player_of(host, event.player) else {
-        event
-            .replies
-            .push(Text::literal("Не вижу вашего персонажа в мире."));
-        return Flow::Cancel;
-    };
+    let player = event.player;
+    let mut lines: Vec<String> = Vec::new();
     match rest {
-        "" => place(&player, event),
-        "remove" => remove(&player, event),
-        "help" => help(event),
-        other => event.replies.push(Text::literal(format!(
+        "" => place(player, &mut lines),
+        "remove" => remove(player, &mut lines),
+        "help" => help(&mut lines),
+        other => lines.push(format!(
             "Неизвестный аргумент «{other}». /car, /car remove, /car help"
-        ))),
+        )),
+    }
+    for line in lines {
+        host.tell(player.uuid, Text::literal(line));
     }
     Flow::Cancel
 }
 
-/// Where the command's player is: a LAN guest comes from the server's list,
-/// the host (who has no UUID in `Host::player`) from the player in place.
-struct Who {
-    position: [f64; 3],
-    dimension: String,
-    yaw: f32,
-}
-
-fn player_of(host: &dyn Host, uuid: u128) -> Option<Who> {
-    if let Some(guest) = host.server_players().into_iter().find(|p| p.uuid == uuid) {
-        return Some(Who {
-            position: guest.position,
-            dimension: guest.dimension,
-            yaw: guest.yaw,
-        });
-    }
-    host.player().map(|p| Who {
-        position: [p.x, p.y, p.z],
-        dimension: p.dimension.to_owned(),
-        yaw: p.yaw,
-    })
-}
-
-fn place(player: &Who, event: &mut PlayerCommandEvent<'_>) {
+fn place(player: &NativeServerPlayer, lines: &mut Vec<String>) {
     if state::car_count() >= MAX_CARS {
-        event
-            .replies
-            .push(Text::literal(format!("Уже {MAX_CARS} машин — больше нельзя.")));
+        lines.push(format!("Уже {MAX_CARS} машин — больше нельзя."));
         return;
     }
     let yaw = f64::from(player.yaw).to_radians();
@@ -86,30 +63,26 @@ fn place(player: &Who, event: &mut PlayerCommandEvent<'_>) {
         pos,
         yaw,
     });
-    event
-        .replies
-        .push(Text::literal("Машина поставлена. Правый клик — сесть."));
+    lines.push("Машина поставлена. Правый клик — сесть.".to_owned());
 }
 
-fn remove(player: &Who, event: &mut PlayerCommandEvent<'_>) {
+fn remove(player: &NativeServerPlayer, lines: &mut Vec<String>) {
     match state::nearest_car(player.position, &player.dimension, 12.0) {
         Some((id, _)) => {
             state::queue(Action::Remove { id });
-            event.replies.push(Text::literal("Убираю машину."));
+            lines.push("Убираю машину.".to_owned());
         }
-        None => event
-            .replies
-            .push(Text::literal("Рядом нет машины (ищу в 12 блоках).")),
+        None => lines.push("Рядом нет машины (ищу в 12 блоках).".to_owned()),
     }
 }
 
-fn help(event: &mut PlayerCommandEvent<'_>) {
+fn help(lines: &mut Vec<String>) {
     for line in [
         "/car — поставить машину перед собой",
         "/car remove — убрать ближайшую машину",
         "/car help — эта справка",
         "W газ, S тормоз/задний ход, A/D руль, Space ручник, Shift — выйти",
     ] {
-        event.replies.push(Text::literal(line));
+        lines.push(line.to_owned());
     }
 }
