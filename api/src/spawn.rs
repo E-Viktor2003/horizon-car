@@ -27,6 +27,10 @@ pub fn spawn(host: &mut dyn Host, dimension: &str, pos: [f64; 3], yaw: f64) -> O
         saved_tag: tag,
         save_timer: 0.0,
         brake_light: false,
+        servo: state::Servo::default(),
+        last_controls: Default::default(),
+        last_blocked: false,
+        last_offset: 0.0,
     });
     state::publish(id);
     Some(id)
@@ -128,6 +132,10 @@ pub fn restore(host: &mut dyn Host, id: u32, dimension: &str) -> bool {
         saved_tag: saved,
         save_timer: 0.0,
         brake_light: false,
+        servo: state::Servo::default(),
+        last_controls: Default::default(),
+        last_blocked: false,
+        last_offset: 0.0,
     });
     state::publish(id);
     true

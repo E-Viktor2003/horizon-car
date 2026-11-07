@@ -52,6 +52,11 @@ impl Default for Gearbox {
 }
 
 impl Gearbox {
+    /// Seconds left in the current shift, for `/car debug`.
+    pub fn shift_timer(&self) -> f64 {
+        self.shift_timer
+    }
+
     pub fn ratio(&self) -> f64 {
         if self.gear < 0 {
             REVERSE_RATIO

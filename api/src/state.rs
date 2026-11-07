@@ -6,7 +6,7 @@
 //! the same snapshots over `horizon_car:state` (see [`crate::net`]).
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use horizon_client::mod_api::Host;
 
@@ -27,6 +27,65 @@ pub struct Car {
     pub saved_tag: String,
     pub save_timer: f64,
     pub brake_light: bool,
+    /// What the anchor did with the velocity we gave it last tick, so the
+    /// servo can make up for the game's own ground friction.
+    pub servo: Servo,
+    /// The controls and checks of the last tick, for `/car debug`.
+    pub last_controls: Controls,
+    pub last_blocked: bool,
+    pub last_offset: f64,
+}
+
+/// How the pig anchor answers the velocity the mod sets each tick.
+///
+/// The game scales an entity's velocity by the ground friction (about 0.55 on
+/// grass) before moving it, so a servo that asks for the plain position error
+/// always falls short. It learns the factor (`gain`) and divides by it.
+#[derive(Clone, Copy, Debug)]
+pub struct Servo {
+    pub set: [f64; 3],
+    pub at: [f64; 3],
+    pub gain: f64,
+    /// Position error of the last tick, blocks.
+    pub offset: f64,
+}
+
+impl Default for Servo {
+    fn default() -> Self {
+        Self {
+            set: [0.0; 3],
+            at: [0.0; 3],
+            gain: 0.55,
+            offset: 0.0,
+        }
+    }
+}
+
+/// Largest velocity the mod asks the anchor for, blocks a tick. Only a
+/// teleport-sized correction ever gets near it; normal tracking is under 4.
+const MAX_SERVO: f64 = 6.0;
+
+/// The velocity that moves the anchor from `actual` towards `target` in one
+/// tick. `gain` is the share of a set velocity the game actually applies
+/// (the ground friction); the horizontal error is divided by it so the
+/// anchor arrives, and the vertical is a plain correction.
+pub fn servo_velocity(target: [f64; 3], actual: [f64; 3], gain: f64) -> [f64; 3] {
+    let gain = gain.clamp(0.3, 1.0);
+    let horizontal = |to: f64, from: f64| ((to - from) / gain).clamp(-MAX_SERVO, MAX_SERVO);
+    [
+        horizontal(target[0], actual[0]),
+        (target[1] - actual[1]).clamp(-0.5, 0.5),
+        horizontal(target[2], actual[2]),
+    ]
+}
+
+/// Fold one tick of evidence into the anchor's gain estimate.
+pub fn servo_gain(old: f64, moved: f64, pushed: f64) -> f64 {
+    if pushed <= 0.05 {
+        return old;
+    }
+    let measured = (moved / pushed).clamp(0.3, 1.1);
+    (old * 0.6 + measured * 0.4).clamp(0.3, 1.0)
 }
 
 /// A pose the client interpolates between server ticks.
@@ -130,11 +189,10 @@ static CHECK_JOIN: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
 /// Which entity rides which car, from the server's mount hook.
 static RIDERS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 /// The window's own pedals, while its player sits in a car.
-static LOCAL_DRIVE: Mutex<Option<(u32, Controls)>> = Mutex::new(None);
-/// Server ticks, and the tick a local pedal update last arrived on: a menu
-/// that stops `movement_input` must not leave the throttle stuck open.
-static TICKS: AtomicU32 = AtomicU32::new(0);
-static LOCAL_FRESH: AtomicU32 = AtomicU32::new(0);
+static LOCAL_DRIVE: Mutex<Option<(u32, Controls, std::time::Instant)>> = Mutex::new(None);
+/// How long a local pedal update stays good without a new one: a menu that
+/// stops `movement_input` must not leave the throttle stuck open.
+const PEDAL_LIFETIME: std::time::Duration = std::time::Duration::from_millis(400);
 /// The car this window's player got into. Kept while the player is still up
 /// at saddle height near it: at speed the client's eased position and the
 /// server's pose drift apart by more than the seat radius, and losing the
@@ -172,8 +230,7 @@ pub fn controls_from_flags(flags: u32) -> Controls {
 }
 
 pub fn set_local_drive(car: u32, controls: Controls) {
-    *lock(&LOCAL_DRIVE) = Some((car, controls));
-    LOCAL_FRESH.store(TICKS.load(Ordering::Relaxed), Ordering::Relaxed);
+    *lock(&LOCAL_DRIVE) = Some((car, controls, std::time::Instant::now()));
 }
 
 pub fn clear_local_drive() {
@@ -225,14 +282,12 @@ pub fn driven(pos: [f64; 3]) -> Option<Snapshot> {
 /// were updated recently: a menu pauses them, and a stale full throttle
 /// would drive the car away on its own.
 pub fn local_drive(car: u32) -> Option<Controls> {
-    let now = TICKS.load(Ordering::Relaxed);
-    let fresh = LOCAL_FRESH.load(Ordering::Relaxed);
-    if now.wrapping_sub(fresh) > 6 {
+    let pedals = *lock(&LOCAL_DRIVE);
+    let (id, controls, at) = pedals?;
+    if id != car || at.elapsed() > PEDAL_LIFETIME {
         return None;
     }
-    lock(&LOCAL_DRIVE)
-        .filter(|(id, _)| *id == car)
-        .map(|(_, controls)| controls)
+    Some(controls)
 }
 
 pub fn set_rider(car: u32, rider: Option<u32>) {
@@ -332,7 +387,6 @@ pub fn set_snapshots(list: Vec<Snapshot>) {
 
 /// Called once per server tick for one level, before that level ticks.
 pub fn tick(host: &mut dyn Host, dimension: &str) {
-    TICKS.fetch_add(1, Ordering::Relaxed);
     process_actions(host);
     process_join_checks(host);
 
@@ -378,18 +432,42 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
         return None;
     };
 
-    // The physics owns the pose: the body is pinned to the entity's anchor
-    // only when the two really diverged (a teleport, a chunk reload). Pinning
-    // every tick used to fight the suspension and throw the car into the air
-    // at speed, which killed both the drive and the steering.
-    if let Some(actual) = host.entity_position(entity) {
+    // The physics owns the pose. The pig is only an anchor, moved towards
+    // the physics each tick; the body is snapped to it only for a real
+    // teleport or a chunk reload.
+    //
+    // The game multiplies an entity's velocity by the ground friction (about
+    // 0.55 on grass) before moving it, so asking for the plain position error
+    // always leaves the anchor behind. Learn the factor from what the anchor
+    // actually did with the last velocity and divide by it; otherwise the
+    // anchor falls behind, and once the gap is large the body used to be
+    // snapped onto it every tick. At that point the snap kept whichever ride
+    // height the car had, including a fully drooped (airborne) one, so the
+    // wheels hung unloaded: no drive, no upshift, and a car that jerked along
+    // at whatever speed it had reached.
+    let entity_at = host.entity_position(entity);
+    if let Some(actual) = entity_at {
+        let moved =
+            ((actual[0] - car.servo.at[0]).powi(2) + (actual[2] - car.servo.at[2]).powi(2)).sqrt();
+        let pushed = (car.servo.set[0].powi(2) + car.servo.set[2].powi(2)).sqrt();
+        car.servo.gain = servo_gain(car.servo.gain, moved, pushed);
+        car.servo.at = actual;
         let anchor = car.vehicle.origin();
         let off = ((actual[0] - anchor[0]).powi(2)
             + (actual[1] - anchor[1]).powi(2)
             + (actual[2] - anchor[2]).powi(2))
         .sqrt();
-        if off > 3.0 {
+        car.servo.offset = off;
+        car.last_offset = off;
+        // A real teleport (a command, a portal, the chunk coming back): take
+        // the anchor's place and stop, so the old velocity cannot fling the
+        // car across the world. A normal lag at speed is a block or less now.
+        if off > 12.0 {
             car.vehicle.set_origin(actual);
+            car.vehicle.body.vel = physics::vec::V3::ZERO;
+            car.vehicle.body.omega = physics::vec::V3::ZERO;
+            car.servo = Servo::default();
+            car.servo.at = actual;
         }
     }
 
@@ -423,6 +501,7 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
     if let Some(guest) = guest_seat.and_then(guest_controls) {
         merge(&mut controls, guest);
     }
+    car.last_controls = controls;
 
     let ground = ground::sample(host, car.vehicle.hubs());
     let before = car.vehicle.origin();
@@ -433,7 +512,9 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
     // The pig's box is small and the car's nose is long: stop the body from
     // driving through a wall the pig would miss.
     let after = car.vehicle.origin();
-    if ground::blocked(host, after, car.vehicle.yaw()) {
+    let blocked = ground::blocked(host, after, car.vehicle.yaw());
+    car.last_blocked = blocked;
+    if blocked {
         if !ground::blocked(host, before, car.vehicle.yaw()) {
             car.vehicle.set_origin(before);
         }
@@ -451,14 +532,14 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
     }
 
     // Ask the pig to go where the physics went. `entity_set_velocity` takes
-    // blocks a tick, so the error over one tick is the velocity to set; a
-    // clamp keeps a teleport-sized jump from throwing the rider.
+    // blocks a tick, so the position error over one tick is the velocity to
+    // set, divided by the friction factor the game will apply to it.
     let target = car.vehicle.origin();
-    if let Some(actual) = host.entity_position(entity) {
-        let vx = (target[0] - actual[0]).clamp(-2.5, 2.5);
-        let vz = (target[2] - actual[2]).clamp(-2.5, 2.5);
-        let vy = (target[1] - actual[1]).clamp(-0.3, 0.3);
-        host.entity_set_velocity(entity, [vx, vy, vz]);
+    if let Some(actual) = entity_at {
+        let velocity = servo_velocity(target, actual, car.servo.gain);
+        host.entity_set_velocity(entity, velocity);
+        car.servo.set = velocity;
+        car.servo.at = actual;
     }
 
     car.brake_light = occupied && (controls.brake > 0.05 || controls.handbrake);
@@ -570,7 +651,7 @@ pub fn remove(id: u32) {
     lock(&CARS).retain(|c| c.id != id);
     lock(&SNAPSHOTS).retain(|s| s.id != id);
     set_rider(id, None);
-    if lock(&LOCAL_DRIVE).is_some_and(|(car, _)| car == id) {
+    if lock(&LOCAL_DRIVE).is_some_and(|(car, _, _)| car == id) {
         clear_local_drive();
     }
     if local_car() == Some(id) {
@@ -657,19 +738,33 @@ pub fn debug_vehicle(id: u32) -> String {
         return "no car".to_owned();
     };
     let v = &car.vehicle;
+    let c = car.last_controls;
+    let gear = v.gearbox.gear;
     format!(
-        "speed {:.1} km/h gear {} rpm {:.0} airborne {} steer {:.2} local_car {:?}\n  comp {:?} load {:?} grounded {:?}",
+        "speed {:.1} km/h gear {gear} rpm {:.0} shift {:.2} airborne {} slip {:.2}\n  \
+         pedals throttle {:.2} brake {:.2} handbrake {} steer {:.2} local_car {:?}\n  \
+         anchor offset {:.2} gain {:.2} blocked {} ride {:.3}\n  \
+         comp {:?} load {:?} grounded {:?} omega {:?}",
         v.forward_speed() * 3.6,
-        v.gearbox.gear,
         v.gearbox.rpm,
+        v.gearbox.shift_timer(),
         v.airborne,
-        v.steer,
+        v.slip,
+        c.throttle,
+        c.brake,
+        c.handbrake,
+        c.steer,
         local_car(),
+        car.last_offset,
+        car.servo.gain,
+        car.last_blocked,
+        v.ride(),
         v.wheels
             .each_ref()
             .map(|w| (w.compression * 100.0).round() / 100.0),
         v.wheels.each_ref().map(|w| w.load.round()),
         v.wheels.each_ref().map(|w| w.grounded),
+        v.wheels.each_ref().map(|w| (w.omega * 10.0).round() / 10.0),
     )
 }
 
@@ -728,6 +823,34 @@ mod tests {
         assert!(!seated_exact([10.3, 20.0, 10.0], car));
         // On the saddle but a block and a half ahead: not this car's driver.
         assert!(!seated_exact([11.5, 20.0 + SEAT_HEIGHT, 10.0], car));
+    }
+
+    #[test]
+    fn the_anchor_servo_makes_up_the_ground_friction() {
+        // One tick at 140 km/h is 1.94 blocks. The game keeps about 0.55 of
+        // the velocity, so a plain error would ask for 1.94 and the anchor
+        // would fall behind by 0.87 blocks every tick for ever.
+        let target = [0.0, 0.0, 1.94];
+        let actual = [0.0, 0.0, 0.0];
+        let velocity = servo_velocity(target, actual, 0.55);
+        assert!((velocity[2] - 1.94 / 0.55).abs() < 1e-9);
+        assert!(velocity[2] <= MAX_SERVO);
+    }
+
+    #[test]
+    fn the_anchor_gain_learns_from_what_moved() {
+        // Asked for 2 blocks, got 1.1: the game kept 0.55 of it.
+        let gain = servo_gain(0.9, 1.1, 2.0);
+        assert!(gain < 0.9 && gain > 0.55, "gain {gain}");
+        // A blocked anchor says nothing bad about the friction.
+        assert!((servo_gain(0.55, 0.0, 0.0) - 0.55).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_six_block_error_cannot_fling_the_anchor() {
+        let velocity = servo_velocity([0.0, 0.0, 0.0], [100.0, 0.0, -100.0], 0.55);
+        assert!(velocity[0].abs() <= MAX_SERVO);
+        assert!(velocity[2].abs() <= MAX_SERVO);
     }
 
     #[test]

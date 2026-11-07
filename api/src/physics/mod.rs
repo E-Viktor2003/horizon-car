@@ -23,6 +23,10 @@ pub const SUBSTEPS: usize = 16;
 /// Length of one substep, seconds.
 pub const STEP: f64 = 0.05 / SUBSTEPS as f64;
 
+/// Smallest squat a snapped chassis takes: enough spring load for the tyres
+/// to steer and pull away, even if the anchor was placed while it flew.
+const MIN_PIN_RIDE: f64 = 0.07;
+
 /// The driver's pedals and wheel this tick. `steer` is -1 (left) to 1 (right).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Controls {
@@ -137,8 +141,13 @@ impl Vehicle {
     }
 
     /// Move the chassis so its contact plane sits at `feet`.
+    ///
+    /// The ride height is floored so a snap taken while the wheels hung
+    /// drooped cannot leave the car held up with no load on its tyres: the
+    /// springs must be able to carry it from the new place.
     pub fn set_origin(&mut self, feet: [f64; 3]) {
-        self.body.pos = V3::from_array(feet) + self.body.up * (CG_HEIGHT - self.ride());
+        let ride = self.ride().clamp(MIN_PIN_RIDE, MAX_COMPRESSION);
+        self.body.pos = V3::from_array(feet) + self.body.up * (CG_HEIGHT - ride);
     }
 
     pub fn yaw(&self) -> f64 {
@@ -645,113 +654,38 @@ mod tests {
         }
         assert!(dive > 0.005, "dive {dive}");
     }
-}
-
-#[cfg(test)]
-mod servo_test {
-    use super::*;
-
-    fn run(pin_every_tick: bool) -> (f64, bool, f64) {
+    #[test]
+    fn a_snap_from_mid_air_lands_on_loaded_wheels() {
+        let mut v = car();
+        let air = Ground {
+            surfaces: [None; 4],
+            friction: [1.0; 4],
+        };
+        // Launch it and let the wheels hang at full droop.
+        v.body.vel = V3::new(0.0, 4.0, 12.0);
+        for _ in 0..(12 * SUBSTEPS) {
+            v.step(&Controls::default(), &air, STEP);
+        }
+        assert!(v.ride() < 0.0, "ride {}", v.ride());
+        // The anchor is put back on the ground (a chunk reload, a teleport).
+        let at = v.origin();
+        v.set_origin([at[0], 0.0, at[2]]);
         let ground = Ground::flat(0.0);
-        let mut v = Vehicle::new([0.0, 0.0, 0.0], 0.0);
-        let mut entity = v.origin();
         let gas = Controls {
             throttle: 1.0,
             ..Default::default()
         };
-        let mut airborne_ticks = 0;
-        for tick in 0..(30 * 20) {
-            if pin_every_tick {
-                v.set_origin(entity);
-            }
-            for _ in 0..SUBSTEPS {
-                v.step(&gas, &ground, STEP);
-            }
-            let target = v.origin();
-            entity = [
-                entity[0] + (target[0] - entity[0]).clamp(-2.5, 2.5),
-                entity[1] + (target[1] - entity[1]).clamp(-0.3, 0.3),
-                entity[2] + (target[2] - entity[2]).clamp(-2.5, 2.5),
-            ];
-            if v.airborne {
-                airborne_ticks += 1;
-            }
-            if tick == 30 * 20 - 1 {
-                return (v.forward_speed() * 3.6, v.airborne, entity[1]);
-            }
+        for _ in 0..(20 * SUBSTEPS) {
+            v.step(&gas, &ground, STEP);
         }
-        (v.forward_speed() * 3.6, v.airborne, entity[1])
-    }
-
-    #[test]
-    fn compare_pinning() {
-        let (pinned_speed, pinned_air, pinned_y) = run(true);
-        let (free_speed, free_air, free_y) = run(false);
-        println!("pinned: {pinned_speed:.1} km/h airborne={pinned_air} y={pinned_y:.2}");
-        println!("free:   {free_speed:.1} km/h airborne={free_air} y={free_y:.2}");
-    }
-}
-
-#[cfg(test)]
-mod snow_trace {
-    use super::*;
-
-    #[test]
-    fn trace_snow() {
-        for mu in [0.35, 0.5, 1.0] {
-            let ground = Ground {
-                surfaces: [Some(0.0); 4],
-                friction: [mu; 4],
-            };
-            let mut v = Vehicle::new([0.0, 0.0, 0.0], 0.0);
-            for _ in 0..(80 * SUBSTEPS) {
-                v.step(&Controls::default(), &ground, STEP);
-            }
-            let gas = Controls {
-                throttle: 1.0,
-                ..Default::default()
-            };
-            let mut t = 0.0;
-            let mut air = 0;
-            let mut next_print = 0.0;
-            for _ in 0..(30 * 20 * SUBSTEPS) {
-                v.step(&gas, &ground, STEP);
-                t += STEP;
-                if v.airborne {
-                    air += 1;
-                }
-                if t >= next_print {
-                    next_print += 1.0;
-                    println!(
-                        "  mu={mu} t={t:.0} v={:.1} yaw={:.1} steer={:.2} om={:?} slip={:.2}",
-                        v.forward_speed() * 3.6,
-                        v.yaw().to_degrees(),
-                        v.steer,
-                        v.wheels.each_ref().map(|w| w.omega.round()),
-                        v.slip
-                    );
-                }
-            }
-            let turned = {
-                let before = v.yaw();
-                let turn = Controls {
-                    throttle: 0.6,
-                    steer: 0.6,
-                    ..Default::default()
-                };
-                for _ in 0..(60 * SUBSTEPS) {
-                    v.step(&turn, &ground, STEP);
-                }
-                normalize(v.yaw() - before).to_degrees()
-            };
-            println!(
-                "mu={mu}: 30s {:.1} km/h gear {} rpm {:.0} airborne {:.2}% turned {:.0} deg",
-                v.forward_speed() * 3.6,
-                v.gearbox.gear,
-                v.gearbox.rpm,
-                100.0 * f64::from(air) / (30.0 * 20.0 * SUBSTEPS as f64),
-                turned
+        for wheel in &v.wheels {
+            assert!(
+                wheel.load > 500.0,
+                "load {} comp {}",
+                wheel.load,
+                wheel.compression
             );
         }
+        assert!(v.forward_speed() > 2.0, "speed {}", v.forward_speed());
     }
 }
