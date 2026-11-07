@@ -73,7 +73,15 @@ fn ground_at(host: &dyn Host, x: f64, z: f64, from_y: f64) -> Option<(f64, Strin
     None
 }
 
-/// Whether the body's footprint overlaps a block this tick.
+/// How high above the contact plane a block must reach before it counts as a
+/// wall. The suspension raycast may step up a whole block (`RISE`), so a
+/// one-block curb, snow bank or path edge is something the car climbs, not a
+/// wall. Checking lower than this used to stop the car dead at every such
+/// edge: the speed was cut to 15% each tick it brushed one, which read as a
+/// jerk and kept the car from ever reaching its next gear.
+const WALL_ABOVE: f64 = 1.05;
+
+/// Whether the body's footprint overlaps a wall this tick.
 pub fn blocked(host: &dyn Host, pos: [f64; 3], yaw: f64) -> bool {
     // The body is about 3.9 blocks long and 1.85 wide; the wheels reach a
     // little further out than the panels.
@@ -89,7 +97,7 @@ pub fn blocked(host: &dyn Host, pos: [f64; 3], yaw: f64) -> bool {
     for (along, side) in CORNERS {
         let x = pos[0] + forward[0] * along + right[0] * side;
         let z = pos[2] + forward[1] * along + right[1] * side;
-        if solid_at(host, x, pos[1] + 0.35, z) || solid_at(host, x, pos[1] + 1.0, z) {
+        if solid_at(host, x, pos[1] + WALL_ABOVE, z) {
             return true;
         }
     }
