@@ -21,7 +21,7 @@ pub fn tick(host: &mut dyn Host) {
     let Some(player) = host.player() else {
         return;
     };
-    let Some(snap) = state::seated_in([player.x, player.y, player.z]) else {
+    let Some(snap) = state::driven([player.x, player.y, player.z]) else {
         return;
     };
     let count = TICKS.fetch_add(1, Ordering::Relaxed);

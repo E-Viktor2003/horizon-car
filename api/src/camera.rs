@@ -24,7 +24,7 @@ pub fn pose(host: &dyn Host, event: &mut CameraPoseEvent<'_>) {
     let Some(player) = host.player() else {
         return;
     };
-    let Some(snap) = state::seated_in([player.x, player.y, player.z]) else {
+    let Some(snap) = state::driven([player.x, player.y, player.z]) else {
         return;
     };
     let eye = [player.x, player.y + PLAYER_EYE, player.z];

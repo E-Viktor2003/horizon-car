@@ -83,7 +83,7 @@ pub const MAX_SPEED: f64 = 38.9;
 /// Steering lock at a standstill, radians.
 pub const MAX_STEER: f64 = 0.55;
 /// Speed at which the lock falls to half, m/s.
-pub const STEER_FALLOFF: f64 = 18.0;
+pub const STEER_FALLOFF: f64 = 30.0;
 /// How fast the wheels turn towards the target, rad/s.
 pub const STEER_RATE: f64 = 4.0;
 
@@ -93,7 +93,7 @@ pub fn friction_of(block: &str) -> f64 {
     if name.contains("ice") || name == "packed_ice" || name == "blue_ice" {
         0.17
     } else if name.contains("snow") {
-        0.35
+        0.45
     } else if name.contains("sand") || name.contains("gravel") {
         0.65
     } else if name.contains("grass") || name.contains("dirt") || name.contains("mud") {

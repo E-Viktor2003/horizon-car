@@ -62,9 +62,10 @@ impl Hooks for Car {
     fn movement_input(&self, host: &dyn Host, event: &mut MovementInputEvent) {
         let Some(player) = host.player() else {
             state::clear_local_drive();
+            state::clear_local_car();
             return;
         };
-        match state::seated_in([player.x, player.y, player.z]) {
+        match state::driving([player.x, player.y, player.z]) {
             Some(snap) => state::set_local_drive(
                 snap.id,
                 state::controls_from_input(event.forward, event.strafe, event.jump),
@@ -124,12 +125,8 @@ impl Hooks for Car {
 
     /// The driver sits inside the car; in third person their own model would
     /// poke through the roof, so leave it out for this window.
-    fn player_submit(&self, host: &dyn Host, event: &mut PlayerSubmitEvent<'_>) -> Flow {
-        if event.who.local
-            && host
-                .player()
-                .is_some_and(|p| state::seated_in([p.x, p.y, p.z]).is_some())
-        {
+    fn player_submit(&self, _host: &dyn Host, event: &mut PlayerSubmitEvent<'_>) -> Flow {
+        if event.who.local && state::local_car() == Some(event.player.id) {
             return Flow::Cancel;
         }
         Flow::Continue

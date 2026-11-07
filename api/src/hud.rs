@@ -15,7 +15,7 @@ pub fn draw(host: &mut dyn Host, event: &mut HudEvent<'_>) {
     let Some(player) = host.player() else {
         return;
     };
-    let Some(snap) = state::seated_in([player.x, player.y, player.z]) else {
+    let Some(snap) = state::driven([player.x, player.y, player.z]) else {
         return;
     };
 

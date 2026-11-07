@@ -179,13 +179,13 @@ cargo check --manifest-path api/Cargo.toml
 cargo test  --manifest-path api/Cargo.toml
 
 python3 tools/glb2car.py low_poly_small_car.glb -o api/src/render/model_data.rs
-python3 tools/package_native.py . -o dist/horizon_car-0.2.0.hnmod
-python3 tools/package_native.py --check dist/horizon_car-0.2.0.hnmod
+python3 tools/package_native.py . -o dist/horizon_car-0.2.1.hnmod
+python3 tools/package_native.py --check dist/horizon_car-0.2.1.hnmod
 ```
 
 ## Установка
 
-1. Скачайте `horizon_car-0.2.0.hnmod` из
+1. Скачайте `horizon_car-0.2.1.hnmod` из
    [Release](https://github.com/E-Viktor2003/horizon-car/releases) или
    артефакта Actions.
 2. Положите файл в `<instance>/horizon-native-mods/` (Mods page → **Open

@@ -131,6 +131,11 @@ static CHECK_JOIN: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
 static RIDERS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 /// The window's own pedals, while its player sits in a car.
 static LOCAL_DRIVE: Mutex<Option<(u32, Controls)>> = Mutex::new(None);
+/// The car this window's player got into. Kept while the player is still up
+/// at saddle height near it: at speed the client's eased position and the
+/// server's pose drift apart by more than the seat radius, and losing the
+/// seat there would drop the pedals and the steering.
+static LOCAL_CAR: Mutex<Option<u32>> = Mutex::new(None);
 /// The last input packet of each LAN guest, by UUID.
 static GUEST_INPUT: Mutex<Vec<(u128, i32)>> = Mutex::new(Vec::new());
 /// The window is in the third-person view this frame: the camera hook must
@@ -168,6 +173,47 @@ pub fn set_local_drive(car: u32, controls: Controls) {
 
 pub fn clear_local_drive() {
     *lock(&LOCAL_DRIVE) = None;
+}
+
+/// The car this window's player got into, if any.
+pub fn local_car() -> Option<u32> {
+    *lock(&LOCAL_CAR)
+}
+
+pub fn clear_local_car() {
+    *lock(&LOCAL_CAR) = None;
+}
+
+/// The car the player at `pos` is in, remembering the seat across the lag
+/// between the client's eased position and the server's pose.
+pub fn driving(pos: [f64; 3]) -> Option<Snapshot> {
+    if let Some(snap) = seated_in(pos) {
+        *lock(&LOCAL_CAR) = Some(snap.id);
+        return Some(snap);
+    }
+    let held = (*lock(&LOCAL_CAR))?;
+    let snap = snapshot(held)?;
+    if still_seated(pos, snap.cur.pos) {
+        Some(snap)
+    } else {
+        *lock(&LOCAL_CAR) = None;
+        None
+    }
+}
+
+/// Whether the player is still on the saddle of the car at `car`, with the
+/// horizontal reach wide enough for the lag at speed but the height strict
+/// enough that a player standing on the ground has clearly left it.
+fn still_seated(player: [f64; 3], car: [f64; 3]) -> bool {
+    let dx = player[0] - car[0];
+    let dz = player[2] - car[2];
+    let dy = player[1] - car[1];
+    dx * dx + dz * dz < 8.0 * 8.0 && (dy - SEAT_HEIGHT).abs() < 0.6
+}
+
+/// The car the window's player is in, for the HUD, the camera and the sound.
+pub fn driven(pos: [f64; 3]) -> Option<Snapshot> {
+    local_car().and_then(snapshot).or_else(|| seated_in(pos))
 }
 
 /// The local window's pedals, when its player is in `car`.
@@ -319,10 +365,19 @@ fn tick_car(host: &mut dyn Host, car: &mut Car) -> Option<(u32, String, String)>
         return None;
     };
 
-    // The entity is the authority on where the car is: whatever the game let
-    // it do last tick is where the physics starts this tick.
+    // The physics owns the pose: the body is pinned to the entity's anchor
+    // only when the two really diverged (a teleport, a chunk reload). Pinning
+    // every tick used to fight the suspension and throw the car into the air
+    // at speed, which killed both the drive and the steering.
     if let Some(actual) = host.entity_position(entity) {
-        car.vehicle.set_origin(actual);
+        let anchor = car.vehicle.origin();
+        let off = ((actual[0] - anchor[0]).powi(2)
+            + (actual[1] - anchor[1]).powi(2)
+            + (actual[2] - anchor[2]).powi(2))
+        .sqrt();
+        if off > 3.0 {
+            car.vehicle.set_origin(actual);
+        }
     }
 
     // A rider entity that is gone (logged out, removed, chunk unloaded) is
@@ -505,6 +560,9 @@ pub fn remove(id: u32) {
     if lock(&LOCAL_DRIVE).is_some_and(|(car, _)| car == id) {
         clear_local_drive();
     }
+    if local_car() == Some(id) {
+        clear_local_car();
+    }
 }
 
 pub fn insert(car: Car) {
@@ -575,7 +633,31 @@ pub fn clear() {
     lock(&RIDERS).clear();
     lock(&GUEST_INPUT).clear();
     clear_local_drive();
+    clear_local_car();
     set_third_person(false);
+}
+
+/// One line for `/car debug`: the car's physics state right now.
+pub fn debug_vehicle(id: u32) -> String {
+    let cars = lock(&CARS);
+    let Some(car) = cars.iter().find(|c| c.id == id) else {
+        return "no car".to_owned();
+    };
+    let v = &car.vehicle;
+    format!(
+        "speed {:.1} km/h gear {} rpm {:.0} airborne {} steer {:.2} local_car {:?}\n  comp {:?} load {:?} grounded {:?}",
+        v.forward_speed() * 3.6,
+        v.gearbox.gear,
+        v.gearbox.rpm,
+        v.airborne,
+        v.steer,
+        local_car(),
+        v.wheels
+            .each_ref()
+            .map(|w| (w.compression * 100.0).round() / 100.0),
+        v.wheels.each_ref().map(|w| w.load.round()),
+        v.wheels.each_ref().map(|w| w.grounded),
+    )
 }
 
 /// One line for `/car debug`: what the server has for `car` and what the
@@ -633,6 +715,23 @@ mod tests {
         assert!(!seated_exact([10.3, 20.0, 10.0], car));
         // On the saddle but a block and a half ahead: not this car's driver.
         assert!(!seated_exact([11.5, 20.0 + SEAT_HEIGHT, 10.0], car));
+    }
+
+    #[test]
+    fn the_seat_is_kept_across_the_lag_at_speed() {
+        let car = [0.0, 64.0, 0.0];
+        let seat = [0.0, 64.0 + SEAT_HEIGHT, 0.0];
+        // Freshly seated.
+        assert!(seated(seat, car));
+        // Six blocks behind the server's pose at speed: the instant test
+        // misses it, but the seat is remembered.
+        let lagging = [6.0, 64.0 + SEAT_HEIGHT, 0.0];
+        assert!(!seated(lagging, car));
+        assert!(still_seated(lagging, car));
+        // Standing on the ground beside the car is not the saddle.
+        assert!(!still_seated([2.0, 64.0, 2.0], car));
+        // Far away is out.
+        assert!(!still_seated([9.0, 64.0 + SEAT_HEIGHT, 0.0], car));
     }
 
     #[test]

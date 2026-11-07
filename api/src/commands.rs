@@ -108,6 +108,7 @@ fn debug(host: &mut dyn Host, player: &NativeServerPlayer, lines: &mut Vec<Strin
         Some((id, pos)) => {
             lines.push(format!("nearest car {id} at {pos:?}"));
             lines.push(state::debug(id, player.uuid));
+            lines.push(state::debug_vehicle(id));
             let dx = player.position[0] - pos[0];
             let dy = player.position[1] - pos[1];
             let dz = player.position[2] - pos[2];
