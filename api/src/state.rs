@@ -6,7 +6,7 @@
 //! the same snapshots over `horizon_car:state` (see [`crate::net`]).
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use horizon_client::mod_api::Host;
 
@@ -131,6 +131,10 @@ static CHECK_JOIN: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
 static RIDERS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 /// The window's own pedals, while its player sits in a car.
 static LOCAL_DRIVE: Mutex<Option<(u32, Controls)>> = Mutex::new(None);
+/// Server ticks, and the tick a local pedal update last arrived on: a menu
+/// that stops `movement_input` must not leave the throttle stuck open.
+static TICKS: AtomicU32 = AtomicU32::new(0);
+static LOCAL_FRESH: AtomicU32 = AtomicU32::new(0);
 /// The car this window's player got into. Kept while the player is still up
 /// at saddle height near it: at speed the client's eased position and the
 /// server's pose drift apart by more than the seat radius, and losing the
@@ -169,6 +173,7 @@ pub fn controls_from_flags(flags: u32) -> Controls {
 
 pub fn set_local_drive(car: u32, controls: Controls) {
     *lock(&LOCAL_DRIVE) = Some((car, controls));
+    LOCAL_FRESH.store(TICKS.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 pub fn clear_local_drive() {
@@ -216,8 +221,15 @@ pub fn driven(pos: [f64; 3]) -> Option<Snapshot> {
     local_car().and_then(snapshot).or_else(|| seated_in(pos))
 }
 
-/// The local window's pedals, when its player is in `car`.
+/// The local window's pedals, when its player is in `car` and the pedals
+/// were updated recently: a menu pauses them, and a stale full throttle
+/// would drive the car away on its own.
 pub fn local_drive(car: u32) -> Option<Controls> {
+    let now = TICKS.load(Ordering::Relaxed);
+    let fresh = LOCAL_FRESH.load(Ordering::Relaxed);
+    if now.wrapping_sub(fresh) > 6 {
+        return None;
+    }
     lock(&LOCAL_DRIVE)
         .filter(|(id, _)| *id == car)
         .map(|(_, controls)| controls)
@@ -320,6 +332,7 @@ pub fn set_snapshots(list: Vec<Snapshot>) {
 
 /// Called once per server tick for one level, before that level ticks.
 pub fn tick(host: &mut dyn Host, dimension: &str) {
+    TICKS.fetch_add(1, Ordering::Relaxed);
     process_actions(host);
     process_join_checks(host);
 
